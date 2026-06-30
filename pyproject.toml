@@ -1,5 +1,11 @@
 [project]
-name = "ai-note"
+name = "videonote"
 version = "0.1.0"
-requires-python = ">=3.13"
-dependencies = []
+description = "视频知识沉淀与智能问答系统"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

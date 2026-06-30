@@ -1,0 +1,37 @@
+app:
+  name: "VideoNote"
+  debug: false
+
+storage:
+  data_dir: "./data"
+  video_retention: "processed"
+
+database:
+  url: "sqlite:///./data/app.db"
+
+vector_store:
+  type: "chroma"
+  path: "./data/chromadb"
+
+llm:
+  provider: "tongyi"
+  tongyi:
+    model: "qwen-plus"
+  deepseek:
+    model: "deepseek-chat"
+
+embedding:
+  provider: "tongyi"
+  model: "text-embedding-v3"
+  dimension: 1536
+
+transcriber:
+  mode: "local"
+  whisper:
+    model_size: "medium"
+    device: "auto"
+    compute_type: "float16"
+
+retrieval:
+  top_k: 5
+  rrf_k: 60
