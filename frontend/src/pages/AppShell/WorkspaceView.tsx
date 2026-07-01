@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { toast } from 'react-hot-toast'
@@ -24,8 +24,6 @@ import {
 } from 'lucide-react'
 import type { Task } from '@/store/taskStore'
 import { useTaskStore } from '@/store/taskStore'
-import MarkmapEditor from './components/MarkmapComponent'
-import ChatPanel from './components/ChatPanel'
 import {
   formatDate,
   formatTime,
@@ -35,6 +33,9 @@ import {
   getTaskTitle,
   groupSegments,
 } from './utils'
+
+const MarkmapEditor = lazy(() => import('./components/MarkmapComponent'))
+const ChatPanel = lazy(() => import('./components/ChatPanel'))
 
 interface WorkspaceViewProps {
   task: Task | null
@@ -312,6 +313,49 @@ function StatusBlock({ task }: { task: Task }) {
   )
 }
 
+function MindmapFallback() {
+  return (
+    <div className="flex h-full w-full items-center justify-center bg-[#111111] px-6">
+      <div className="w-full max-w-2xl rounded-2xl border border-neutral-800 bg-[#151515] p-6 shadow-2xl">
+        <div className="mb-5 flex items-center justify-between">
+          <div>
+            <div className="h-4 w-24 animate-pulse rounded bg-neutral-800" />
+            <div className="mt-2 h-3 w-40 animate-pulse rounded bg-neutral-800/60" />
+          </div>
+          <div className="h-8 w-24 animate-pulse rounded-lg bg-neutral-800" />
+        </div>
+        <div className="relative h-56 overflow-hidden rounded-xl border border-neutral-800/70 bg-[#0D0D0D]">
+          <div className="absolute left-1/2 top-1/2 h-10 w-40 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full bg-primary/20" />
+          <div className="absolute left-[18%] top-[22%] h-7 w-28 animate-pulse rounded-full bg-neutral-800" />
+          <div className="absolute right-[16%] top-[28%] h-7 w-32 animate-pulse rounded-full bg-neutral-800" />
+          <div className="absolute bottom-[24%] left-[24%] h-7 w-36 animate-pulse rounded-full bg-neutral-800" />
+          <div className="absolute bottom-[18%] right-[24%] h-7 w-24 animate-pulse rounded-full bg-neutral-800" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ChatPanelFallback() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-[#161616]">
+      <div className="flex-1 space-y-4 overflow-hidden p-4">
+        <div className="mr-12 space-y-2 rounded-xl bg-[#202020] p-3">
+          <div className="h-3 w-28 animate-pulse rounded bg-neutral-700" />
+          <div className="h-3 w-full animate-pulse rounded bg-neutral-700/70" />
+        </div>
+        <div className="ml-12 space-y-2 rounded-xl bg-primary/10 p-3">
+          <div className="h-3 w-32 animate-pulse rounded bg-primary/30" />
+          <div className="h-3 w-4/5 animate-pulse rounded bg-primary/20" />
+        </div>
+      </div>
+      <div className="border-t border-neutral-800 p-4">
+        <div className="h-10 animate-pulse rounded-xl bg-neutral-800" />
+      </div>
+    </div>
+  )
+}
+
 function SummaryContent({ task }: { task: Task }) {
   const [activeTab, setActiveTab] = useState<'summary' | 'deep-reading' | 'transcript' | 'mindmap'>(
     'summary',
@@ -558,8 +602,10 @@ function SummaryContent({ task }: { task: Task }) {
         </div>
 
         <div className={`absolute inset-0 ${activeTab === 'mindmap' ? 'block' : 'hidden'}`}>
-          {content ? (
-            <MarkmapEditor value={content} onChange={() => {}} height="100%" title={title} />
+          {activeTab !== 'mindmap' ? null : content ? (
+            <Suspense fallback={<MindmapFallback />}>
+              <MarkmapEditor value={content} onChange={() => {}} height="100%" title={title} />
+            </Suspense>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-neutral-500">
               暂无可生成思维导图的内容
@@ -572,12 +618,24 @@ function SummaryContent({ task }: { task: Task }) {
 }
 
 function VideoChatPanel({ task }: { task: Task | null }) {
+  const [chatReadyToLoad, setChatReadyToLoad] = useState(false)
   const coverUrl = getTaskCoverUrl(task)
   const title = getTaskTitle(task)
   const author = getTaskAuthor(task)
   const createdAt = formatDate(task?.createdAt)
   const duration = formatTime(task?.audioMeta?.duration)
   const isPreviewTask = task?.formData.provider_id === 'preview'
+
+  useEffect(() => {
+    setChatReadyToLoad(false)
+    if (!task || task.status !== 'SUCCESS' || isPreviewTask) return
+
+    const id = window.setTimeout(() => {
+      setChatReadyToLoad(true)
+    }, 350)
+
+    return () => window.clearTimeout(id)
+  }, [isPreviewTask, task?.id, task?.status])
 
   if (!task) {
     return (
@@ -688,7 +746,13 @@ function VideoChatPanel({ task }: { task: Task | null }) {
           </span>
         </div>
         {task.status === 'SUCCESS' ? (
-          <ChatPanel taskId={task.id} mode="half" onModeChange={() => {}} />
+          chatReadyToLoad ? (
+            <Suspense fallback={<ChatPanelFallback />}>
+              <ChatPanel taskId={task.id} mode="half" onModeChange={() => {}} />
+            </Suspense>
+          ) : (
+            <ChatPanelFallback />
+          )
         ) : (
           <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-neutral-500">
             <div>

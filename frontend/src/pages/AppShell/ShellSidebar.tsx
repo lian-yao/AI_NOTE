@@ -5,6 +5,7 @@ import type { ShellView } from './utils'
 interface ShellSidebarProps {
   currentView: ShellView
   onChangeView: (view: ShellView) => void
+  onPreviewView?: (view: ShellView) => void
 }
 
 const items: { view: ShellView; label: string; icon: ComponentType<{ size?: number }> }[] = [
@@ -13,7 +14,11 @@ const items: { view: ShellView; label: string; icon: ComponentType<{ size?: numb
   { view: 'library', label: '知识库', icon: Library },
 ]
 
-export default function ShellSidebar({ currentView, onChangeView }: ShellSidebarProps) {
+export default function ShellSidebar({
+  currentView,
+  onChangeView,
+  onPreviewView,
+}: ShellSidebarProps) {
   return (
     <aside className="z-10 flex h-full w-[68px] shrink-0 flex-col items-center border-r border-neutral-800 bg-[#111111] py-4">
       <div className="mt-4 flex w-full flex-col items-center gap-4">
@@ -25,6 +30,8 @@ export default function ShellSidebar({ currentView, onChangeView }: ShellSidebar
             <button
               key={item.view}
               type="button"
+              onFocus={() => onPreviewView?.(item.view)}
+              onMouseEnter={() => onPreviewView?.(item.view)}
               onClick={() => onChangeView(item.view)}
               className={`group relative flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${
                 active
@@ -49,6 +56,8 @@ export default function ShellSidebar({ currentView, onChangeView }: ShellSidebar
       <div className="mt-auto flex w-full flex-col items-center gap-4">
         <button
           type="button"
+          onFocus={() => onPreviewView?.('settings')}
+          onMouseEnter={() => onPreviewView?.('settings')}
           onClick={() => onChangeView('settings')}
           className={`group relative flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${
             currentView === 'settings'
