@@ -14,11 +14,22 @@ from app import models
 from app.api import api_router
 from app.api.v1 import router as v1_router
 from app.pipeline import PipelineOrchestrator, EventBus
+from app.api.v1.ws import manager as ws_manager
+from app.pipeline.orchestrator import PipelineEvent
 from app.core.errors import register_error_handlers
 
 # 初始化日志（import 阶段执行，早于 lifespan）
 
 logger = setup_logger(settings.data_dir)
+
+
+def _forward_to_ws(event: PipelineEvent):
+    """将流水线事件通过 WebSocket 推送给前端。"""
+    import asyncio
+    try:
+        asyncio.create_task(ws_manager.broadcast(event.task_id, event))
+    except RuntimeError:
+        pass  # 没有事件循环时静默忽略
 
 
 @asynccontextmanager
@@ -30,6 +41,7 @@ async def lifespan(app: FastAPI):
     app.state.orchestrator = PipelineOrchestrator()
     app.state.event_bus = event_bus
     app.state.orchestrator.on_progress(event_bus.emit)
+    event_bus.on_any(_forward_to_ws)
     app.state.start_time = time.time()
     logger.info("Application started")
 

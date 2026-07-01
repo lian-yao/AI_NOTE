@@ -94,7 +94,7 @@ def get_video(video_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/{video_id}")
-def delete_video(video_id: str, db: Session = Depends(get_db)):
+async def delete_video(video_id: str, db: Session = Depends(get_db)):
     video = db.query(Video).filter(Video.video_id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
