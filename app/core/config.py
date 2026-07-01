@@ -4,6 +4,9 @@
 """
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from app.core.paths import project_root
+
+_default_data_dir = str(project_root() / "data")
 
 
 class Settings(BaseSettings):
@@ -12,6 +15,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         env_prefix="VN_",
     )
+
+    # Database
+    database_url: str = "sqlite:///./data/app.db"
 
     # LLM
     tongyi_api_key: str = ""
@@ -25,7 +31,7 @@ class Settings(BaseSettings):
     whisper_device: str = "auto"
 
     # Storage
-    data_dir: str = "./data"
+    data_dir: str = _default_data_dir
     video_retention: str = "processed"
 
     # Retrieval
