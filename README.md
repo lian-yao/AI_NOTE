@@ -23,4 +23,35 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
+## 前端启动
+
+前端项目在 `frontend/` 目录下，推荐使用 **pnpm**：
+
+```bash
+cd frontend
+corepack enable
+corepack prepare pnpm@9 --activate
+pnpm install
+pnpm dev
+```
+
+默认访问地址为 `http://localhost:5173`。如需指定端口：
+
+```bash
+VITE_FRONTEND_PORT=5190 pnpm dev
+```
+
+Windows PowerShell：
+
+```powershell
+$env:VITE_FRONTEND_PORT=5190; pnpm dev
+```
+
+如果 `npm install` 遇到 peer dependency / ERESOLVE 问题，优先改用 `pnpm install`；必须使用 npm 时可尝试：
+
+```bash
+npm install --legacy-peer-deps
+npm run dev
+```
+
 详细说明见 [环境搭建与快速启动指南](docs/环境搭建与快速启动指南.md)。
