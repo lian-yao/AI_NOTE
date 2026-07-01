@@ -35,6 +35,9 @@ async def lifespan(app: FastAPI):
     logger.info("Application shutting down")
 
 
+# 初始化日志，并拿到logger实例
+logger = setup_logger(settings.data_dir)
+
 app = FastAPI(
     title="VideoNote - 视频知识沉淀与智能问答系统",
     version="0.1.0",
