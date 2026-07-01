@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     whisper_model_size: str = "medium"
     whisper_device: str = "auto"
 
+    # Platform cookies
+    bilibili_cookie_file: str = "data/cookies.txt"
+
     # Storage
     data_dir: str = _default_data_dir
     video_retention: str = "processed"

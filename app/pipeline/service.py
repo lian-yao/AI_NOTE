@@ -53,8 +53,9 @@ class PipelineService:
         db = SessionLocal()
         try:
             # 1. 创建视频记录
+            video_id_str = f"b_mock{int(__import__("time").time())}"
             video = Video(
-                video_id=f"b_mock{int(__import__("time").time())}",
+                video_id=video_id_str,
                 url=source_url,
                 title="视频标题（Mock）",
                 status="completed",
@@ -62,9 +63,17 @@ class PipelineService:
             db.add(video)
             db.flush()
 
-            # 2. 转写
-            audio_path = Path("./data/mock_audio.mp3")
-            transcript = await self.transcriber.transcribe(audio_path)
+            # 2. 转写（按新协议：audio_path, video_dir, progress_cb -> StageResult）
+            video_dir = str(project_path("data", "videos", video_id_str))
+            Path(video_dir).mkdir(parents=True, exist_ok=True)
+            audio_path = str(Path(video_dir) / "audio.wav")
+            result = await self.transcriber.transcribe(audio_path, video_dir)
+
+            if not result.success:
+                raise RuntimeError(f"转写失败: {result.error}")
+
+            transcript_text = result.metadata.get("full_text", "")
+            segment_count = result.metadata.get("segment_count", 0)
 
             # 3. 写笔记文件
             notes_dir = project_path("data", "notes")
@@ -73,7 +82,7 @@ class PipelineService:
             note_content = await self.llm.chat(
                 [
                     {"role": "system", "content": "根据以下转录文本生成结构化笔记："},
-                    {"role": "user", "content": transcript.full_text},
+                    {"role": "user", "content": transcript_text},
                 ]
             )
             note_file.write_text(note_content, encoding="utf-8")
@@ -84,7 +93,7 @@ class PipelineService:
                 file_path=str(note_file),
                 summary="Mock 笔记摘要",
                 keywords='["AI", "深度学习"]',
-                total_chunks=len(transcript.segments),
+                total_chunks=segment_count,
                 section_count=1,
                 char_count=len(note_content),
                 model_used="mock",
@@ -93,8 +102,14 @@ class PipelineService:
             db.flush()
 
             # 5. 处理为文本切片并存储
+            from app.schemas.transcript import TranscriptResult, TranscriptSegment
+            mock_transcript = TranscriptResult(
+                segments=[TranscriptSegment(text=transcript_text, start=0.0, end=1.0)],
+                full_text=transcript_text,
+                language=result.metadata.get("language", "zh"),
+            )
             chunks = await self.processor.process(
-                transcript, note.id, video.video_id
+                mock_transcript, note.id, video.video_id
             )
             await self.store.add_chunks(chunks)
 
