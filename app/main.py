@@ -8,6 +8,7 @@ from app.core.logger import setup_logger
 from app.core.database import engine, Base
 from app.api.v1 import router as api_v1_router
 from app.pipeline.service import PipelineService
+from app.core.errors import register_error_handlers
 from loguru import logger
 
 
@@ -33,6 +34,7 @@ app = FastAPI(
     lifespan=lifespan  # 绑定生命周期
 )
 
+register_error_handlers(app)
 app.include_router(api_v1_router)
 
 
