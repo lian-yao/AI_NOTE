@@ -23,4 +23,32 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
+## 前端启动
+
+前端项目在 `frontend/` 目录下，使用 **npm** 安装依赖并启动：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+默认访问地址为 `http://localhost:5173`。如需指定端口：
+
+```bash
+VITE_FRONTEND_PORT=5190 npm run dev
+```
+
+Windows PowerShell：
+
+```powershell
+$env:VITE_FRONTEND_PORT=5190; npm run dev
+```
+
+如果 `npm install` 遇到 peer dependency / ERESOLVE 问题，可尝试：
+
+```bash
+npm install --legacy-peer-deps
+```
+
 详细说明见 [环境搭建与快速启动指南](docs/环境搭建与快速启动指南.md)。

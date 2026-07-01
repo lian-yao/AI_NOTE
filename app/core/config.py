@@ -4,6 +4,9 @@
 """
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from app.core.paths import project_root
+
+_default_data_dir = str(project_root() / "data")
 
 
 class Settings(BaseSettings):
@@ -13,31 +16,34 @@ class Settings(BaseSettings):
         env_prefix="VN_",
     )
 
-    # ---------- LLM ----------
+    # Database
+    database_url: str = "sqlite:///" + str(project_root() / "data" / "app.db")
+
+    # LLM
     tongyi_api_key: str = ""
     deepseek_api_key: str = ""
     llm_provider: str = "tongyi"
-    tongyi_model: str = "qwen-plus"           
-    deepseek_model: str = "deepseek-chat"     
+    tongyi_model: str = "qwen-plus"
+    deepseek_model: str = "deepseek-chat"
 
-    # ---------- Embedding（向量化） ----------
-    embedding_api_key: str = ""               # 
-    embedding_model: str = "text-embedding-v3" # 
+    # Embedding（向量化）
+    embedding_api_key: str = ""
+    embedding_model: str = "text-embedding-v3"
 
-    # ---------- Vector DB（向量数据库） ----------
-    vector_db_path: str = "./data/chromadb"   # 
+    # Vector DB（向量数据库）
+    vector_db_path: str = "./data/chromadb"
 
-    # ---------- Transcribe ----------
+    # Transcribe
     bjian_app_id: str = ""
     bjian_access_token: str = ""
     whisper_model_size: str = "medium"
     whisper_device: str = "auto"
 
-    # ---------- Storage ----------
-    data_dir: str = "./data"
+    # Storage
+    data_dir: str = _default_data_dir
     video_retention: str = "processed"
 
-    # ---------- Retrieval ----------
+    # Retrieval
     retrieval_top_k: int = 5
     rrf_k: int = 60
 
