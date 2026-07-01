@@ -8,6 +8,12 @@ from app.schemas.note import NoteResponse
 from app.schemas.qa import QARequest, QAResponse
 
 
+class GlobalQARequest(BaseModel):
+    question: str
+    top_k: int = 5
+    video_ids: list[str] | None = None
+
+
 class ProcessRequest(BaseModel):
     source_url: str
 

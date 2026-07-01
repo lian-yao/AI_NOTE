@@ -15,7 +15,6 @@ from app.api import api_router
 from app.api.v1 import router as v1_router
 from app.pipeline import PipelineOrchestrator, EventBus
 from app.core.errors import register_error_handlers
-from loguru import logger
 
 # 初始化日志（import 阶段执行，早于 lifespan）
 
