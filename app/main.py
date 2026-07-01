@@ -13,7 +13,7 @@ from app.core.database import engine, Base
 from app import models
 from app.api import api_router
 from app.api.v1 import router as v1_router
-from app.pipeline.service import PipelineService
+from app.pipeline import PipelineOrchestrator, EventBus
 from app.core.errors import register_error_handlers
 from loguru import logger
 
@@ -24,7 +24,10 @@ async def lifespan(app: FastAPI):
     setup_logger(settings.data_dir)
     os.makedirs("data", exist_ok=True)
     Base.metadata.create_all(bind=engine)
-    app.state.pipeline = PipelineService()
+    event_bus = EventBus()
+    app.state.orchestrator = PipelineOrchestrator()
+    app.state.event_bus = event_bus
+    app.state.orchestrator.on_progress(event_bus.emit)
     app.state.start_time = time.time()
     logger.info("Application started")
 
