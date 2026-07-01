@@ -1,11 +1,13 @@
 """
 FastAPI 应用入口
 """
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.core.config import settings
 from app.core.logger import setup_logger, log_requests
 from app.core.database import engine, Base
+from app import models
 from app.api.v1 import router as api_v1_router
 from app.pipeline.service import PipelineService
 from app.core.errors import register_error_handlers
@@ -16,6 +18,7 @@ from loguru import logger
 async def lifespan(app: FastAPI):
     #  启动逻辑
     setup_logger(settings.data_dir)
+    os.makedirs("data", exist_ok=True)
     Base.metadata.create_all(bind=engine)
     app.state.pipeline = PipelineService()
     logger.info("Application started")

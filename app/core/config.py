@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     )
 
     # Database
-    database_url: str = "sqlite:///./data/app.db"
+    database_url: str = "sqlite:///" + str(project_root() / "data" / "app.db")
 
     # LLM
     tongyi_api_key: str = ""

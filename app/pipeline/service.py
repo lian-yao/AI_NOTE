@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.core.database import SessionLocal
+from app.core.paths import project_path
 from app.models.video import Video
 from app.models.note import Note
+from app.models.chunk import Chunk
 from app.schemas.note import NoteResponse
 from app.schemas.qa import QARequest, QAResponse
 
@@ -47,16 +49,13 @@ class PipelineService:
         self.qa = qa or MockQA(self.llm)
 
     async def process_video(self, source_url: str) -> NoteResponse:
-        """下载 -> 转写 -> 切块 -> 存储 -> 生成笔记。"""
-        import uuid
-        from datetime import datetime
-
+        """下载 -> 转写 -> 生成笔记 -> 切片存储。"""
         db = SessionLocal()
         try:
             # 1. 创建视频记录
             video = Video(
-                id=str(uuid.uuid4()),
-                source_url=source_url,
+                video_id=f"b_mock{int(__import__("time").time())}",
+                url=source_url,
                 title="视频标题（Mock）",
                 status="completed",
             )
@@ -67,35 +66,40 @@ class PipelineService:
             audio_path = Path("./data/mock_audio.mp3")
             transcript = await self.transcriber.transcribe(audio_path)
 
-            # 3. 创建笔记
-            note = Note(
-                id=str(uuid.uuid4()),
-                video_id=video.id,
-                title=f"{video.title} 的笔记",
-                raw_transcript=transcript.full_text,
-            )
-            db.add(note)
-            db.flush()
-
-            # 4. 处理为文本块
-            chunks = await self.processor.process(transcript, note.id)
-
-            # 5. 向量化并存储
-            embeddings = await self.llm.embed([c.content for c in chunks])
-            for chunk, emb in zip(chunks, embeddings):
-                chunk.embedding = emb
-            await self.store.add_chunks(chunks)
-
-            # 6. 生成笔记内容
-            note.content = await self.llm.chat(
+            # 3. 写笔记文件
+            notes_dir = project_path("data", "notes")
+            notes_dir.mkdir(parents=True, exist_ok=True)
+            note_file = notes_dir / f"{video.video_id}.md"
+            note_content = await self.llm.chat(
                 [
                     {"role": "system", "content": "根据以下转录文本生成结构化笔记："},
                     {"role": "user", "content": transcript.full_text},
                 ]
             )
+            note_file.write_text(note_content, encoding="utf-8")
+
+            # 4. 创建笔记记录
+            note = Note(
+                video_id=video.id,
+                file_path=str(note_file),
+                summary="Mock 笔记摘要",
+                keywords='["AI", "深度学习"]',
+                total_chunks=len(transcript.segments),
+                section_count=1,
+                char_count=len(note_content),
+                model_used="mock",
+            )
+            db.add(note)
+            db.flush()
+
+            # 5. 处理为文本切片并存储
+            chunks = await self.processor.process(
+                transcript, note.id, video.video_id
+            )
+            await self.store.add_chunks(chunks)
+
             db.commit()
             db.refresh(note)
-
             return NoteResponse.model_validate(note)
         finally:
             db.close()

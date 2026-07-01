@@ -1,9 +1,11 @@
 """
-SQLAlchemy ORM models.
+SQLAlchemy ORM 模型。
 """
 from app.core.database import Base
 from app.models.video import Video
+from app.models.task import Task
+from app.models.task_log import TaskLog
 from app.models.note import Note
-from app.models.chunk import NoteChunk
+from app.models.chunk import Chunk
 
-__all__ = ["Base", "Video", "Note", "NoteChunk"]
+__all__ = ["Base", "Video", "Task", "TaskLog", "Note", "Chunk"]
