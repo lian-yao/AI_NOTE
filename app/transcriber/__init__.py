@@ -1,5 +1,5 @@
 """
-Transcriber protocol: transcribe audio/video to text.
+转写器协议：将音频/视频转录为结构化文本。
 """
 from __future__ import annotations
 from pathlib import Path
@@ -9,7 +9,7 @@ from app.schemas.transcript import TranscriptResult
 
 
 class Transcriber(Protocol):
-    """Transcribe audio/video file to structured text."""
+    """音频/视频文件转写接口。"""
 
     async def transcribe(self, audio_path: Path) -> TranscriptResult:
         ...

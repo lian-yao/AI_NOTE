@@ -1,5 +1,5 @@
 """
-Pydantic data models.
+Pydantic 数据模型。
 """
 from app.schemas.video import VideoCreate, VideoResponse
 from app.schemas.note import NoteCreate, NoteResponse, NoteUpdate

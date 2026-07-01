@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.logger import setup_logger
 from app.core.database import engine, Base
 from app.api.v1 import router as api_v1_router
+from app.pipeline.service import PipelineService
 from loguru import logger
 
 
@@ -15,6 +16,7 @@ async def lifespan(app: FastAPI):
     #  启动逻辑
     setup_logger(settings.data_dir)
     Base.metadata.create_all(bind=engine)
+    app.state.pipeline = PipelineService()
     logger.info("Application started")
 
     yield  # 服务运行中
