@@ -17,11 +17,14 @@ from app.pipeline import PipelineOrchestrator, EventBus
 from app.core.errors import register_error_handlers
 from loguru import logger
 
+# 初始化日志（import 阶段执行，早于 lifespan）
+
+logger = setup_logger(settings.data_dir)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     #  启动逻辑
-    setup_logger(settings.data_dir)
     os.makedirs("data", exist_ok=True)
     Base.metadata.create_all(bind=engine)
     event_bus = EventBus()
@@ -38,8 +41,6 @@ async def lifespan(app: FastAPI):
     logger.info("Application shutting down")
 
 
-# 初始化日志，并拿到logger实例
-logger = setup_logger(settings.data_dir)
 
 app = FastAPI(
     title="VideoNote - 视频知识沉淀与智能问答系统",
