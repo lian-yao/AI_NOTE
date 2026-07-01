@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     tongyi_api_key: str = ""
     deepseek_api_key: str = ""
     llm_provider: str = "tongyi"
+    tongyi_model: str = "qwen-plus"
+    deepseek_model: str = "deepseek-chat"
+
+    # Embedding（向量化）
+    embedding_api_key: str = ""
+    embedding_model: str = "text-embedding-v3"
+
+    # Vector DB（向量数据库）
+    vector_db_path: str = "./data/chromadb"
 
     # Transcribe
     bjian_app_id: str = ""

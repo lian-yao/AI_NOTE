@@ -44,10 +44,21 @@ export default defineConfig(({ mode }) => {
     build: {
       rollupOptions: {
         output: {
-          manualChunks: {
-            markdown: ['react-markdown', 'react-syntax-highlighter', 'remark-gfm', 'remark-math', 'rehype-katex'],
-            markmap: ['markmap-lib', 'markmap-view', 'markmap-toolbar', 'markmap-common'],
-            vendor: ['react', 'react-dom', 'react-router-dom'],
+          manualChunks(id) {
+            if (id.includes('vite/preload-helper') || id.includes('commonjsHelpers')) {
+              return 'vendor'
+            }
+            if (!id.includes('node_modules')) return undefined
+            if (/[\\/]node_modules[\\/](react|react-dom|react-router-dom)[\\/]/.test(id)) {
+              return 'vendor'
+            }
+            if (/[\\/]node_modules[\\/](markmap-|@vscode[\\/]markdown-it-katex|katex|markdown-it)/.test(id)) {
+              return 'markmap'
+            }
+            if (/[\\/]node_modules[\\/](react-markdown|react-syntax-highlighter|remark-|rehype-|mdast-|micromark|unified|vfile|hast-|unist-)/.test(id)) {
+              return 'markdown'
+            }
+            return undefined
           },
         },
       },

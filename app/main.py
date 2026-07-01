@@ -1,6 +1,7 @@
 """
 FastAPI 应用入口
 """
+import time
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -10,19 +11,38 @@ from app.core.config import settings
 from app.core.logger import setup_logger, log_requests
 from app.core.database import engine, Base
 from app import models
-from app.api.v1 import router as api_v1_router
-from app.pipeline.service import PipelineService
+from app.api import api_router
+from app.api.v1 import router as v1_router
+from app.pipeline import PipelineOrchestrator, EventBus
+from app.api.v1.ws import manager as ws_manager
+from app.pipeline.orchestrator import PipelineEvent
 from app.core.errors import register_error_handlers
-from loguru import logger
+
+# 初始化日志（import 阶段执行，早于 lifespan）
+
+logger = setup_logger(settings.data_dir)
+
+
+def _forward_to_ws(event: PipelineEvent):
+    """将流水线事件通过 WebSocket 推送给前端。"""
+    import asyncio
+    try:
+        asyncio.create_task(ws_manager.broadcast(event.task_id, event))
+    except RuntimeError:
+        pass  # 没有事件循环时静默忽略
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     #  启动逻辑
-    setup_logger(settings.data_dir)
     os.makedirs("data", exist_ok=True)
     Base.metadata.create_all(bind=engine)
-    app.state.pipeline = PipelineService()
+    event_bus = EventBus()
+    app.state.orchestrator = PipelineOrchestrator()
+    app.state.event_bus = event_bus
+    app.state.orchestrator.on_progress(event_bus.emit)
+    event_bus.on_any(_forward_to_ws)
+    app.state.start_time = time.time()
     logger.info("Application started")
 
     yield  # 服务运行中
@@ -30,6 +50,7 @@ async def lifespan(app: FastAPI):
     # 关闭逻辑
     await logger.complete()
     logger.info("Application shutting down")
+
 
 
 app = FastAPI(
@@ -40,7 +61,8 @@ app = FastAPI(
 )
 
 register_error_handlers(app)
-app.include_router(api_v1_router)
+api_router.include_router(v1_router)
+app.include_router(api_router)
 app.middleware("http")(log_requests)
 app.add_middleware(
     CORSMiddleware,

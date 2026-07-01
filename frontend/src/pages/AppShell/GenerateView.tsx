@@ -165,6 +165,7 @@ export default function GenerateView({
   const linkDropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (!backendReady) return
     loadEnabledModels({ silent: true })
   }, [backendReady, loadEnabledModels])
 

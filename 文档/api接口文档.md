@@ -5,6 +5,7 @@
 | 文档版本 | 日期 | 作者 | 变更说明 |
 |---------|------|------|---------|
 | v1.0 | 2026-06-30 | Codex | 初稿完成 |
+| v1.1 | 2026-07-01 | Codex | 补充后端实现状态标注 |
 
 ---
 
@@ -1698,52 +1699,55 @@ interface ProxyConfig {
 
 ## 13. 接口速查表
 
-| 方法 | 路径 | 说明 | 认证 |
-|------|------|------|------|
-| POST | /api/v1/videos/parse | 解析视频链接 | - |
-| POST | /api/v1/videos/process | 提交视频处理 | - |
-| GET | /api/v1/videos | 获取视频列表 | - |
-| GET | /api/v1/videos/{video_id} | 获取视频详情 | - |
-| DELETE | /api/v1/videos/{video_id} | 删除视频 | - |
-| GET | /api/v1/notes/{video_id} | 获取笔记详情 | - |
-| GET | /api/v1/notes/{video_id}/raw | 获取原始 Markdown | - |
-| POST | /api/v1/qa/ask | 单视频问答 | - |
-| POST | /api/v1/qa/ask-global | 跨视频问答 | - |
-| POST | /api/v1/qa/index | 构建问答索引 | - |
-| GET | /api/v1/qa/index/status | 获取问答索引状态 | - |
-| GET | /api/v1/tasks/{task_id} | 获取任务状态 | - |
-| GET | /api/v1/tasks/{task_id}/logs | 获取任务日志 | - |
-| POST | /api/v1/tasks/{task_id}/retry | 重试失败任务 | - |
-| WS | /api/v1/ws/task/{task_id} | 实时进度推送 | - |
-| GET | /api/v1/system/config | 获取系统配置 | - |
-| PUT | /api/v1/system/config | 更新配置 | - |
-| POST | /api/v1/system/config/save | 保存配置 | - |
-| GET | /api/v1/system/stats | 系统统计 | - |
-| GET | /api/v1/system/health | 健康检查 | - |
-| GET | /api/v1/system/ready | 后端就绪检查 | - |
-| GET | /api/v1/system/deploy-status | 部署状态 | - |
-| GET | /api/v1/providers | 获取 Provider 列表 | - |
-| POST | /api/v1/providers | 创建 Provider | - |
-| GET | /api/v1/providers/{provider_id} | 获取 Provider 详情 | - |
-| PUT | /api/v1/providers/{provider_id} | 更新 Provider | - |
-| DELETE | /api/v1/providers/{provider_id} | 删除 Provider | - |
-| POST | /api/v1/providers/{provider_id}/test | 测试 Provider 连接 | - |
-| GET | /api/v1/providers/{provider_id}/remote-models | 获取 Provider 远程模型 | - |
-| GET | /api/v1/models | 获取已启用模型列表 | - |
-| POST | /api/v1/models | 启用模型 | - |
-| DELETE | /api/v1/models/{model_id} | 删除已启用模型 | - |
-| GET | /api/v1/transcribers/config | 获取转写器配置 | - |
-| PUT | /api/v1/transcribers/config | 更新转写器配置 | - |
-| GET | /api/v1/transcribers/models/status | 获取转写模型状态 | - |
-| POST | /api/v1/transcribers/models/download | 下载转写模型 | - |
-| GET | /api/v1/transcribers/whisper-models | 获取 Whisper 模型映射 | - |
-| POST | /api/v1/transcribers/whisper-models | 新增 Whisper 模型映射 | - |
-| DELETE | /api/v1/transcribers/whisper-models/{name} | 删除 Whisper 模型映射 | - |
-| GET | /api/v1/platforms/{platform}/cookie | 获取平台 Cookie | - |
-| PUT | /api/v1/platforms/{platform}/cookie | 更新平台 Cookie | - |
-| GET | /api/v1/network/proxy | 获取代理配置 | - |
-| PUT | /api/v1/network/proxy | 更新代理配置 | - |
-| POST | /api/v1/uploads/videos | 上传本地视频 | - |
+> 状态说明：✅ 已实现（角色A） | ⏳ 待实现（角色B/C/D）
+
+| 方法 | 路径 | 说明 | 认证 | 状态 |
+|------|------|------|------|------|
+| POST | /api/v1/videos/parse | 解析视频链接 | - | ✅ |
+| POST | /api/v1/videos/process | 提交视频处理 | - | ✅ |
+| GET | /api/v1/videos | 获取视频列表 | - | ✅ |
+| GET | /api/v1/videos/{video_id} | 获取视频详情 | - | ✅ |
+| DELETE | /api/v1/videos/{video_id} | 删除视频 | - | ✅ |
+| GET | /api/v1/notes/{video_id} | 获取笔记详情 | - | ✅ |
+| GET | /api/v1/notes/{video_id}/raw | 获取原始 Markdown | - | ✅ |
+| POST | /api/v1/qa/ask | 单视频问答 | - | ✅ |
+| POST | /api/v1/qa/ask-global | 跨视频问答 | - | ✅ |
+| POST | /api/v1/qa/index | 构建问答索引 | - | ⏳ |
+| GET | /api/v1/qa/index/status | 获取问答索引状态 | - | ⏳ |
+| GET | /api/v1/tasks/{task_id} | 获取任务状态 | - | ✅ |
+| GET | /api/v1/tasks/{task_id}/logs | 获取任务日志 | - | ✅ |
+| POST | /api/v1/tasks/{task_id}/retry | 重试失败任务 | - | ✅ |
+| WS | /api/v1/ws/task/{task_id} | 实时进度推送 | - | ✅ |
+| GET | /api/v1/system/config | 获取系统配置 | - | ✅ |
+| PUT | /api/v1/system/config | 更新配置 | - | ✅ |
+| POST | /api/v1/system/config/save | 保存配置 | - | ✅ |
+| GET | /api/v1/system/stats | 系统统计 | - | ✅ |
+| GET | /api/v1/system/health | 健康检查 | - | ✅ |
+| GET | /api/v1/system/ready | 后端就绪检查 | - | ⏳ |
+| GET | /api/v1/system/deploy-status | 部署状态 | - | ⏳ |
+| GET | /api/v1/providers | 获取 Provider 列表 | - | ⏳ |
+| POST | /api/v1/providers | 创建 Provider | - | ⏳ |
+| GET | /api/v1/providers/{provider_id} | 获取 Provider 详情 | - | ⏳ |
+| PUT | /api/v1/providers/{provider_id} | 更新 Provider | - | ⏳ |
+| DELETE | /api/v1/providers/{provider_id} | 删除 Provider | - | ⏳ |
+| POST | /api/v1/providers/{provider_id}/test | 测试 Provider 连接 | - | ⏳ |
+| GET | /api/v1/providers/{provider_id}/remote-models | 获取远程模型 | - | ⏳ |
+| GET | /api/v1/models | 获取已启用模型列表 | - | ⏳ |
+| POST | /api/v1/models | 启用模型 | - | ⏳ |
+| DELETE | /api/v1/models/{model_id} | 删除已启用模型 | - | ⏳ |
+| GET | /api/v1/transcribers/config | 获取转写器配置 | - | ⏳ |
+| PUT | /api/v1/transcribers/config | 更新转写器配置 | - | ⏳ |
+| GET | /api/v1/transcribers/models/status | 获取转写模型状态 | - | ⏳ |
+| POST | /api/v1/transcribers/models/download | 下载转写模型 | - | ⏳ |
+| GET | /api/v1/transcribers/whisper-models | 获取 Whisper 模型映射 | - | ⏳ |
+| POST | /api/v1/transcribers/whisper-models | 新增 Whisper 模型映射 | - | ⏳ |
+| DELETE | /api/v1/transcribers/whisper-models/{name} | 删除 Whisper 模型映射 | - | ⏳ |
+| GET | /api/v1/platforms/{platform}/cookie | 获取平台 Cookie | - | ⏳ |
+| PUT | /api/v1/platforms/{platform}/cookie | 更新平台 Cookie | - | ⏳ |
+| GET | /api/v1/network/proxy | 获取代理配置 | - | ⏳ |
+| PUT | /api/v1/network/proxy | 更新代理配置 | - | ⏳ |
+| POST | /api/v1/uploads/videos | 上传本地视频 | - | ⏳ |
+
 
 ---
 
