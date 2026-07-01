@@ -10,9 +10,17 @@
 
 ## 快速开始
 
+本项目使用 **uv** 管理依赖，Python 版本锁定在 **3.13.3**（见 `.python-version`）。
+
 ```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+# 安装 uv（如果没有）
+pip install uv
+
+# 创建虚拟环境并安装依赖
+uv sync
+
+# 启动开发服务器
+uv run uvicorn app.main:app --reload
 ```
 
 详细说明见 [环境搭建与快速启动指南](docs/环境搭建与快速启动指南.md)。
