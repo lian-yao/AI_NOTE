@@ -4,7 +4,7 @@ FastAPI 应用入口
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.core.config import settings
-from app.core.logger import setup_logger
+from app.core.logger import setup_logger, log_requests
 from app.core.database import engine, Base
 from app.api.v1 import router as api_v1_router
 from app.pipeline.service import PipelineService
@@ -36,6 +36,7 @@ app = FastAPI(
 
 register_error_handlers(app)
 app.include_router(api_v1_router)
+app.middleware("http")(log_requests)
 
 
 @app.get("/health")
