@@ -1,10 +1,14 @@
-import request from '@/utils/request'
+import request, { isNotFoundError } from '@/utils/request'
 
 interface CallOpts {
   silent?: boolean
 }
 
 const cfg = (opts?: CallOpts) => (opts?.silent ? { suppressToast: true } : undefined)
+const pendingCfg = (opts?: CallOpts) => ({
+  ...(opts?.silent ? { suppressToast: true } : {}),
+  suppressNotFoundToast: true,
+})
 
 export interface SysHealth {
   status: 'healthy' | 'degraded' | string
@@ -43,6 +47,31 @@ export interface DeployStatus {
   }
 }
 
+const fallbackDeployStatus: DeployStatus = {
+  backend: {
+    status: 'unknown',
+    port: 0,
+  },
+  cuda: {
+    available: false,
+    version: null,
+    gpu_name: null,
+  },
+  whisper: {
+    model_size: '-',
+    transcriber_type: 'unknown',
+    downloaded: false,
+  },
+  ffmpeg: {
+    available: false,
+  },
+}
+
 export const getDeployStatus = async (opts?: CallOpts): Promise<DeployStatus> => {
-  return await request.get('/system/deploy-status', cfg(opts))
+  try {
+    return await request.get('/system/deploy-status', pendingCfg(opts))
+  } catch (error) {
+    if (isNotFoundError(error)) return fallbackDeployStatus
+    throw error
+  }
 }

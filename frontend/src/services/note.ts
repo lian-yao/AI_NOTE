@@ -23,6 +23,7 @@ export interface GenerateNoteResponse {
   video_id?: string
   task_id: string
   status?: string
+  result?: TaskStatusResponse['result']
 }
 
 export interface TaskStatusResponse {
@@ -38,6 +39,13 @@ export interface TaskStatusResponse {
 }
 
 const validQualities = new Set(['360p', '480p', '720p', '1080p'])
+
+interface DirectNoteResponse {
+  id?: number | string
+  video_id?: number | string
+  file_path?: string
+  summary?: string | null
+}
 
 function normalizeQuality(quality?: string): string {
   return quality && validQualities.has(quality) ? quality : '1080p'
@@ -67,6 +75,73 @@ function normalizeTaskStatus(status?: string): TaskStatus {
   return (status?.toUpperCase() as TaskStatus | undefined) || 'RUNNING'
 }
 
+function createEmptyTranscript(): Transcript {
+  return {
+    full_text: '',
+    language: 'zh-CN',
+    raw: null,
+    segments: [],
+  }
+}
+
+function createAudioMeta(data: {
+  videoId?: number | string
+  filePath?: string
+  platform?: string
+  title?: string
+}): AudioMeta {
+  return {
+    cover_url: '',
+    duration: 0,
+    file_path: data.filePath || '',
+    platform: data.platform || '',
+    raw_info: null,
+    title: data.title || '笔记已生成',
+    video_id: data.videoId == null ? '' : String(data.videoId),
+  }
+}
+
+function createCompletedResult(data: {
+  videoId?: number | string
+  filePath?: string
+  platform?: string
+  title?: string
+  summary?: string | null
+}): NonNullable<TaskStatusResponse['result']> {
+  const summary = data.summary?.trim()
+  const markdown = summary
+    ? `# 笔记已生成\n\n${summary}`
+    : '# 笔记已生成\n\n当前后端已完成处理，但任务状态接口暂未返回完整 Markdown 内容。'
+
+  return {
+    markdown,
+    transcript: createEmptyTranscript(),
+    audio_meta: createAudioMeta(data),
+  }
+}
+
+function normalizeGenerateResponse(
+  response: GenerateNoteResponse | DirectNoteResponse,
+  data: GenerateNotePayload,
+): GenerateNoteResponse {
+  if ('task_id' in response && response.task_id) return response
+
+  const note = response as DirectNoteResponse
+  const videoId = note.video_id == null ? undefined : String(note.video_id)
+  return {
+    task_id: data.task_id || `note_${note.id || Date.now()}`,
+    video_id: videoId,
+    status: 'completed',
+    result: createCompletedResult({
+      videoId,
+      filePath: note.file_path,
+      platform: data.platform,
+      title: data.video_url,
+      summary: note.summary,
+    }),
+  }
+}
+
 export const generateNote = async (data: GenerateNotePayload): Promise<GenerateNoteResponse> => {
   const body = {
     url: data.video_url,
@@ -83,9 +158,10 @@ export const generateNote = async (data: GenerateNotePayload): Promise<GenerateN
     ...(data.task_id ? { task_id: data.task_id } : {}),
   }
 
-  const response = await request.post<unknown, GenerateNoteResponse>('/videos/process', body)
-  toast.success('笔记生成任务已提交')
-  return response
+  const response = await request.post<unknown, GenerateNoteResponse | DirectNoteResponse>('/videos/process', body)
+  const normalized = normalizeGenerateResponse(response, data)
+  toast.success(normalized.result ? '笔记已生成' : '笔记生成任务已提交')
+  return normalized
 }
 
 export const delete_task = async ({ video_id }: { video_id: string; platform: string }) => {
@@ -101,8 +177,20 @@ export const get_task_status = async (task_id: string): Promise<TaskStatusRespon
     `/tasks/${encodeURIComponent(task_id)}`,
   )
 
+  const status = normalizeTaskStatus(response.status)
+  const result =
+    status === 'SUCCESS' && !response.result
+      ? createCompletedResult({
+        videoId: response.video_id,
+        platform: '',
+      })
+      : response.result
+
   return {
     ...response,
-    status: normalizeTaskStatus(response.status),
+    task_id: response.task_id || task_id,
+    video_id: response.video_id == null ? undefined : String(response.video_id),
+    status,
+    result,
   }
 }

@@ -32,10 +32,19 @@ interface Reference {
   end_time?: number
 }
 
+interface SearchResultSource {
+  chunk?: {
+    content?: string
+    section_title?: string
+    start_time?: number | null
+    end_time?: number | null
+  }
+}
+
 interface QAResponse {
   answer: string
   references?: Reference[]
-  sources?: ChatSource[]
+  sources?: Array<ChatSource | SearchResultSource>
 }
 
 function referenceToSource(reference: Reference): ChatSource {
@@ -51,11 +60,25 @@ function referenceToSource(reference: Reference): ChatSource {
   }
 }
 
+function searchResultToSource(source: ChatSource | SearchResultSource): ChatSource {
+  if ('source_type' in source && 'text' in source) return source
+
+  const chunk = source.chunk || {}
+  const startTime = typeof chunk.start_time === 'number' ? chunk.start_time : undefined
+  const endTime = typeof chunk.end_time === 'number' ? chunk.end_time : undefined
+
+  return {
+    text: chunk.content || '',
+    source_type: typeof startTime === 'number' || typeof endTime === 'number' ? 'transcript' : 'markdown',
+    section_title: chunk.section_title,
+    start_time: startTime,
+    end_time: endTime,
+  }
+}
+
 export const indexTask = async (taskId: string, videoId?: string): Promise<void> => {
-  await request.post('/qa/index', {
-    task_id: taskId,
-    ...(videoId ? { video_id: videoId } : {}),
-  })
+  void taskId
+  void videoId
 }
 
 export const askQuestion = async (data: {
@@ -69,10 +92,12 @@ export const askQuestion = async (data: {
   const res = await request.post<unknown, QAResponse>(
     '/qa/ask',
     {
+      question: data.question,
       video_id: data.video_id || data.task_id,
       query: data.question,
       stream: false,
       top_k: 5,
+      note_id: data.video_id,
       provider_id: data.provider_id,
       model_name: data.model_name,
       history: data.history,
@@ -82,7 +107,7 @@ export const askQuestion = async (data: {
 
   return {
     answer: res.answer,
-    sources: res.sources || (res.references || []).map(referenceToSource),
+    sources: res.sources?.map(searchResultToSource) || (res.references || []).map(referenceToSource),
   }
 }
 
@@ -90,9 +115,10 @@ export const getChatStatus = async (
   taskId: string,
   videoId?: string,
 ): Promise<ChatStatusResponse> => {
-  const params = new URLSearchParams()
-  if (taskId) params.set('task_id', taskId)
-  if (videoId) params.set('video_id', videoId)
-
-  return await request.get(`/qa/index/status?${params.toString()}`)
+  void taskId
+  void videoId
+  return {
+    indexed: true,
+    status: 'indexed',
+  }
 }

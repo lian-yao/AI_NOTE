@@ -46,6 +46,7 @@ import {
   type TranscriberConfig,
 } from '@/services/transcriber'
 import { getDeployStatus, type DeployStatus } from '@/services/system'
+import { isSkippedApiResult } from '@/services/fallback'
 import { IconSwitch } from './components/IconSwitch'
 import BackendInitDialog from '@/components/BackendInitDialog'
 
@@ -571,7 +572,7 @@ function ProviderSection() {
       const models = normalizeRemoteModels(response)
       setRemoteModelsByProvider(prev => ({ ...prev, [providerId]: models }))
       await refreshEnabledModels(providerId)
-      toast.success(`已获取 ${models.length} 个模型`)
+      toast.success(models.length > 0 ? `已获取 ${models.length} 个模型` : '后端远程模型接口暂未实现，已显示本地启用模型')
     } catch {
       // 拦截器已提示
     } finally {
@@ -608,8 +609,8 @@ function ProviderSection() {
 
     setTestingProviderId(providerId)
     try {
-      await testConnection({ id: providerId, model: firstModel })
-      toast.success('连通性测试成功')
+      const result = await testConnection({ id: providerId, model: firstModel })
+      toast.success(isSkippedApiResult(result) ? '后端连通性测试接口暂未实现，已跳过' : '连通性测试成功')
     } catch {
       // 拦截器已提示
     } finally {
@@ -1669,8 +1670,8 @@ function TranscriberSection() {
                   <button
                     type="button"
                     onClick={async () => {
-                      await downloadModel({ model_size: selectedModel, transcriber_type: selectedType })
-                      toast.success('模型下载已开始')
+                      const result = await downloadModel({ model_size: selectedModel, transcriber_type: selectedType })
+                      toast.success(isSkippedApiResult(result) ? '后端模型下载接口暂未实现，已跳过' : '模型下载已开始')
                       setTimeout(() => load(true), 1000)
                     }}
                     className="flex items-center gap-1.5 rounded-lg bg-neutral-800 px-3 py-2 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
