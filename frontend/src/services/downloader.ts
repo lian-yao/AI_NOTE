@@ -12,18 +12,20 @@ export interface DownloaderCookie {
 }
 
 export const getDownloaderCookie = async (
-  id?: string,
+  platform?: string,
   opts?: CallOpts,
 ): Promise<DownloaderCookie | null> => {
-  if (!id) return null
+  if (!platform) return null
 
   const data = await request.get<unknown, DownloaderCookie | undefined>(
-    '/get_downloader_cookie/' + id,
+    `/platforms/${encodeURIComponent(platform)}/cookie`,
     cfg(opts),
   )
   return data || null
 }
 
 export const updateDownloaderCookie = async (data: { cookie: string; platform: string }) => {
-  return await request.post('/update_downloader_cookie', data)
+  return await request.put(`/platforms/${encodeURIComponent(data.platform)}/cookie`, {
+    cookie: data.cookie,
+  })
 }

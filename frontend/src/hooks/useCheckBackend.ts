@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { getApiBaseURL } from '@/utils/api'
 
 // 后端就绪检测的几个时间常量
 // - 总等待上限 60s：超过这个时间没就绪就切「启动失败」UI，
@@ -12,21 +13,17 @@ const PROBE_TIMEOUT_MS = 5_000
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 // 直接用 fetch 而非 utils/request 的共享 axios：那个 axios 装了全局 toast 拦截器，
-// 启动期每次 /sys_check 失败都会弹一个红色 toast，2s 一次轮询会叠出十几个。
-function getBackendBase(): string {
-  const fromEnv = import.meta.env.VITE_API_BASE_URL
-  return ((fromEnv && fromEnv.length > 0) ? fromEnv : '/api').replace(/\/$/, '')
-}
-
+// 启动期自检不走共享 axios，避免后端不可用时反复弹 toast。
 async function probeSysCheck(): Promise<boolean> {
-  const url = `${getBackendBase()}/sys_check`
+  const url = `${getApiBaseURL()}/system/ready`
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS)
   try {
     const res = await fetch(url, { signal: ctrl.signal })
+    if (res.status === 404) return true
     if (!res.ok) return false
     const json = await res.json().catch(() => null)
-    return json?.code === 0
+    return json?.code === 0 && json?.data?.ready !== false
   }
   catch {
     return false
@@ -58,7 +55,7 @@ const initialStatus: Status = {
  * 后端就绪检测。
  *
  * 三路信号汇聚：
- *  1. HTTP 轮询 /sys_check —— 所有平台通用
+ *  1. HTTP 轮询 /system/ready；接口暂缺时前端跳过，不阻塞页面
  *  2. Tauri 'backend-ready' 事件 —— 桌面端 sidecar 探测器先于 HTTP 一步触达
  *  3. Tauri 'backend-terminated' / 'backend-startup-timeout' 事件 —— sidecar 死了或超时
  *     立即进失败态，不再继续轮询（旧实现的 while(true) 就是死在这里）

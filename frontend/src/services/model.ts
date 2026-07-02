@@ -1,16 +1,23 @@
 import request from '@/utils/request.ts'
 import type { IProvider } from '@/types'
 
-// opts.silent: 让本次请求失败时不弹全局红 toast（调用方自行 catch 处理，
-// 比如 onboarding 撞名重试这种预期内失败）
-interface CallOpts { silent?: boolean }
+interface CallOpts {
+  silent?: boolean
+}
+
 const cfg = (o?: CallOpts) => (o?.silent ? { suppressToast: true } : undefined)
+const withParams = (opts: CallOpts | undefined, params: Record<string, unknown>) => ({
+  ...(cfg(opts) || {}),
+  params,
+})
 
 export type ProviderPayload = Partial<
   Pick<IProvider, 'id' | 'name' | 'logo' | 'type' | 'enabled'>
 > & {
   api_key?: string
+  apiKey?: string
   base_url?: string
+  baseUrl?: string
 }
 
 export interface TestConnectionPayload {
@@ -18,34 +25,129 @@ export interface TestConnectionPayload {
   model: string
 }
 
-export const getProviderList = async (opts?: CallOpts) => {
-  return await request.get('/get_all_providers', cfg(opts))
-}
-export const getProviderById = async (id: string, opts?: CallOpts) => {
-  return await request.get(`/get_provider_by_id/${id}`, cfg(opts))
-}
-export const updateProviderById = async (data: ProviderPayload, opts?: CallOpts) => {
-  return await request.post('/update_provider', data, cfg(opts))
+interface ProviderApiItem {
+  id: string
+  name: string
+  logo?: string
+  type?: string
+  base_url?: string
+  enabled?: boolean | number
+  has_api_key?: boolean
+  api_key?: string
+  created_at?: string
+  updated_at?: string
 }
 
-export const addProvider = async (data: ProviderPayload, opts?: CallOpts) => {
-  return await request.post('/add_provider', data, cfg(opts))
+interface ModelListResponse<T> {
+  items: T[]
+}
+
+interface ModelDataListResponse<T> {
+  data: T[]
+}
+
+interface RemoteModelsResponse {
+  models?: unknown[] | { data?: unknown[] }
+  data?: unknown[]
+}
+
+interface EnabledModelItem {
+  id: string | number
+  provider_id: string
+  model_name: string
+  enabled?: boolean
+  created_at?: string
+}
+
+function normalizeProvider(provider: ProviderApiItem) {
+  const hasApiKey = Boolean(provider.has_api_key)
+  return {
+    ...provider,
+    logo: provider.logo || 'custom',
+    type: provider.type || 'openai-compatible',
+    api_key: provider.api_key || (hasApiKey ? '******' : ''),
+    base_url: provider.base_url || '',
+    enabled: provider.enabled === false ? 0 : Number(provider.enabled ?? 1),
+  }
+}
+
+function providerBody(data: ProviderPayload) {
+  return {
+    name: data.name,
+    logo: data.logo,
+    type: data.type === 'custom' ? 'openai-compatible' : data.type,
+    base_url: data.base_url ?? data.baseUrl,
+    api_key: data.api_key ?? data.apiKey,
+    enabled: data.enabled == null ? undefined : Boolean(data.enabled),
+  }
+}
+
+function getItems<T>(res: ModelListResponse<T> | ModelDataListResponse<T> | T[]): T[] {
+  if (Array.isArray(res)) return res
+  if ('items' in res && Array.isArray(res.items)) return res.items
+  if ('data' in res && Array.isArray(res.data)) return res.data
+  return []
+}
+
+export const getProviderList = async (opts?: CallOpts) => {
+  const res = await request.get<unknown, ModelListResponse<ProviderApiItem> | ModelDataListResponse<ProviderApiItem>>(
+    '/providers',
+    cfg(opts),
+  )
+  return getItems(res).map(normalizeProvider)
+}
+
+export const getProviderById = async (id: string, opts?: CallOpts) => {
+  const res = await request.get<unknown, ProviderApiItem>(
+    `/providers/${encodeURIComponent(id)}`,
+    cfg(opts),
+  )
+  return normalizeProvider(res)
+}
+
+export const updateProviderById = async (data: ProviderPayload, opts?: CallOpts) => {
+  if (!data.id) throw new Error('provider id is required')
+
+  return await request.put(
+    `/providers/${encodeURIComponent(data.id)}`,
+    providerBody(data),
+    cfg(opts),
+  )
+}
+
+export const addProvider = async (data: ProviderPayload, opts?: CallOpts): Promise<string> => {
+  const res = await request.post<unknown, { id: string }>('/providers', providerBody(data), cfg(opts))
+  return res.id
 }
 
 export const deleteProviderById = async (id: string, opts?: CallOpts) => {
-  return await request.get(`/delete_provider/${id}`, cfg(opts))
+  return await request.delete(`/providers/${encodeURIComponent(id)}`, cfg(opts))
 }
 
 export const testConnection = async (data: TestConnectionPayload, opts?: CallOpts) => {
-  return await request.post('/connect_test', data, cfg(opts))
+  return await request.post(
+    `/providers/${encodeURIComponent(data.id)}/test`,
+    { model_name: data.model },
+    cfg(opts),
+  )
 }
 
 export const fetchModels = async (providerId: string, opts?: CallOpts) => {
-  return await request.get('/model_list/' + providerId, cfg(opts))
+  return await request.get<unknown, RemoteModelsResponse>(
+    `/providers/${encodeURIComponent(providerId)}/remote-models`,
+    cfg(opts),
+  )
 }
 
 export const fetchEnableModelById = async (id: string, opts?: CallOpts) => {
-  return await request.get('/model_enable/' + id, cfg(opts))
+  const res = await request.get<
+    unknown,
+    ModelListResponse<EnabledModelItem> | ModelDataListResponse<EnabledModelItem>
+  >(
+    '/models',
+    withParams(opts, { provider_id: id, enabled: true }),
+  )
+  return getItems(res)
 }
 
 export async function addModel(
@@ -56,9 +158,16 @@ export async function addModel(
 }
 
 export const fetchEnableModels = async (opts?: CallOpts) => {
-  return await request.get('/model_list', cfg(opts))
+  const res = await request.get<
+    unknown,
+    ModelListResponse<EnabledModelItem> | ModelDataListResponse<EnabledModelItem>
+  >(
+    '/models',
+    withParams(opts, { enabled: true }),
+  )
+  return getItems(res)
 }
 
 export const deleteModelById = async (modelId: number, opts?: CallOpts) => {
-  return await request.get(`/models/delete/${modelId}`, cfg(opts))
+  return await request.delete(`/models/${modelId}`, cfg(opts))
 }

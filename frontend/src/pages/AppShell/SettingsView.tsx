@@ -554,7 +554,10 @@ function ProviderSection() {
       const models = await fetchEnableModelById(providerId, { silent: true })
       setEnabledModelsByProvider(prev => ({
         ...prev,
-        [providerId]: Array.isArray(models) ? models : [],
+        [providerId]: Array.isArray(models) ? models.map(model => ({
+          id: model.id,
+          model_name: model.model_name,
+        })) : [],
       }))
     } catch {
       setEnabledModelsByProvider(prev => ({ ...prev, [providerId]: [] }))
@@ -873,9 +876,10 @@ function normalizeRemoteModels(response: unknown): RemoteModel[] {
         : Array.isArray(response)
           ? response
           : []
+  const models = rawModels || []
 
   const map = new Map<string, RemoteModel>()
-  rawModels.forEach(rawModel => {
+  models.forEach(rawModel => {
     const id = getRemoteModelId(rawModel)
     if (!id || map.has(id)) return
 
@@ -1716,6 +1720,8 @@ function MonitorSection() {
     load(true)
   }, [])
 
+  const backendOk = status?.backend.status === 'ok' || status?.backend.status === 'running'
+
   return (
     <section>
       <div className="mb-4 flex justify-end">
@@ -1738,8 +1744,8 @@ function MonitorSection() {
         <StatusCard
           icon={<Server size={18} />}
           title="后端"
-          value={status?.backend.status === 'running' ? `运行中 :${status.backend.port}` : '未知'}
-          ok={status?.backend.status === 'running'}
+          value={backendOk ? `${status?.backend.status}:${status?.backend.port}` : '未知'}
+          ok={backendOk}
         />
         <StatusCard
           icon={<Settings2 size={18} />}

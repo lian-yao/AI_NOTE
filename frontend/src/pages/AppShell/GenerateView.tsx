@@ -221,7 +221,7 @@ export default function GenerateView({
       const payload = {
         video_url: targetUrl,
         platform,
-        quality: 'medium' as const,
+        quality: '1080p' as const,
         link: true,
         screenshot: false,
         model_name: selectedModelItem.model_name,

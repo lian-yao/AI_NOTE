@@ -11,9 +11,7 @@ export interface TranscriberConfig {
   whisper_model_size: string
   available_types: { value: string; label: string }[]
   whisper_model_sizes: string[]
-  /** 内置模型映射：size → HF repo_id */
   whisper_builtin_models?: Record<string, string>
-  /** 用户自定义模型映射：名称 → HF repo_id 或本地路径 */
   whisper_custom_models?: Record<string, string>
   mlx_whisper_available: boolean
 }
@@ -22,10 +20,8 @@ export interface ModelStatus {
   model_size: string
   downloaded: boolean
   downloading: boolean
-  /** 后台下载失败（仓库 404、网络中断、本地路径缺 model.bin 等）。后端从此字段透传 */
   failed?: boolean
-  /** 下载失败时的原因（仅 failed 时存在），用于前端提示 */
-  error?: string
+  error?: string | null
 }
 
 export interface ModelsStatusResponse {
@@ -35,25 +31,25 @@ export interface ModelsStatusResponse {
 }
 
 export const getTranscriberConfig = async (opts?: CallOpts): Promise<TranscriberConfig> => {
-  return await request.get('/transcriber_config', cfg(opts))
+  return await request.get('/transcribers/config', cfg(opts))
 }
 
 export const updateTranscriberConfig = async (data: {
   transcriber_type: string
   whisper_model_size?: string
 }) => {
-  return await request.post('/transcriber_config', data)
+  return await request.put('/transcribers/config', data)
 }
 
 export const getModelsStatus = async (opts?: CallOpts): Promise<ModelsStatusResponse> => {
-  return await request.get('/transcriber_models_status', cfg(opts))
+  return await request.get('/transcribers/models/status', cfg(opts))
 }
 
 export const downloadModel = async (data: {
   model_size: string
   transcriber_type?: string
 }) => {
-  return await request.post('/transcriber_download', data)
+  return await request.post('/transcribers/models/download', data)
 }
 
 export interface WhisperModelsResponse {
@@ -61,17 +57,14 @@ export interface WhisperModelsResponse {
   custom: Record<string, string>
 }
 
-/** 列出内置 + 自定义 whisper 模型映射 */
 export const listWhisperModels = async (opts?: CallOpts): Promise<WhisperModelsResponse> => {
-  return await request.get('/whisper_models', cfg(opts))
+  return await request.get('/transcribers/whisper-models', cfg(opts))
 }
 
-/** 新增自定义模型映射（名称 → HF repo_id 或本地路径） */
 export const addWhisperModel = async (data: { name: string; target: string }) => {
-  return await request.post('/whisper_models', data)
+  return await request.post('/transcribers/whisper-models', data)
 }
 
-/** 删除自定义模型映射（不会删除已下载的模型文件） */
 export const deleteWhisperModel = async (name: string) => {
-  return await request.delete(`/whisper_models/${encodeURIComponent(name)}`)
+  return await request.delete(`/transcribers/whisper-models/${encodeURIComponent(name)}`)
 }

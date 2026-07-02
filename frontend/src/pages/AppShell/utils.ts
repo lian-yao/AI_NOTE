@@ -24,12 +24,16 @@ export function getTaskTitle(task: Task | null | undefined): string {
 }
 
 export function getTaskAuthor(task: Task | null | undefined): string {
-  return (
-    task?.audioMeta?.raw_info?.uploader ||
-    task?.audioMeta?.raw_info?.owner?.name ||
-    task?.audioMeta?.raw_info?.author ||
-    ''
-  )
+  const rawInfo = task?.audioMeta?.raw_info
+  if (!rawInfo || typeof rawInfo !== 'object') return ''
+
+  const item = rawInfo as {
+    uploader?: string
+    owner?: { name?: string }
+    author?: string
+  }
+
+  return item.uploader || item.owner?.name || item.author || ''
 }
 
 export function getTaskCoverUrl(task: Task | null | undefined): string {
