@@ -149,7 +149,7 @@ export default function GenerateView({
   onSubmitted,
   onOpenSettings,
 }: GenerateViewProps) {
-  const { addPendingTask, setCurrentTask } = useTaskStore()
+  const { addPendingTask, setCurrentTask, updateTaskContent } = useTaskStore()
   const { modelList, loading: modelLoading, loadEnabledModels } = useModelStore()
   const [singleUrl, setSingleUrl] = useState('')
   const [batchUrls, setBatchUrls] = useState('')
@@ -235,6 +235,14 @@ export default function GenerateView({
       }
       const data = await generateNote(payload)
       addPendingTask(data.task_id, platform, payload)
+      if (data.result) {
+        updateTaskContent(data.task_id, {
+          status: 'SUCCESS',
+          markdown: data.result.markdown,
+          transcript: data.result.transcript,
+          audioMeta: data.result.audio_meta,
+        })
+      }
       setCurrentTask(data.task_id)
       setSingleUrl('')
       setBatchUrls('')
@@ -277,7 +285,7 @@ export default function GenerateView({
       await submitUrl(data.url, 'local')
     } catch (error) {
       console.error('上传失败:', error)
-      toast.error('上传失败，请重试')
+      toast.error(error instanceof Error ? error.message : '上传失败，请重试')
     } finally {
       setIsUploading(false)
     }
