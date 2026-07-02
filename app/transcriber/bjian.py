@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from app.schemas.stage import StageResult
+from app.core.config import settings
 
 
 class BjianTranscriber:
@@ -36,6 +37,11 @@ class BjianTranscriber:
         """
         self.app_id = app_id or os.getenv("BJIAN_APP_ID", "")
         self.access_token = access_token or os.getenv("BJIAN_ACCESS_TOKEN", "")
+        # 优先从 Settings 读取（支持 VN_ 前缀的 .env）
+        if not self.app_id:
+            self.app_id = settings.bjian_app_id
+        if not self.access_token:
+            self.access_token = settings.bjian_access_token
 
     @property
     def _is_configured(self) -> bool:

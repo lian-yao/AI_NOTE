@@ -1,5 +1,5 @@
 ﻿"""
-API v1 璺敱銆?
+API v1 路由注册
 """
 from fastapi import APIRouter
 from app.api.v1.notes import router as notes_router

@@ -22,7 +22,7 @@ class FasterWhisperTranscriber:
 
     def __init__(
         self,
-        model_size: str = "medium",
+        model_size: str = "tiny",
         device: str = "auto",
         compute_type: str = "float16",
     ):

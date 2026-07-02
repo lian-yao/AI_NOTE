@@ -20,6 +20,7 @@ _SHORT_PATTERN = re.compile(r"b23\.tv/[a-zA-Z0-9]+", re.I)
 
 def _extract_bvid(url: str) -> str | None:
     """从 URL 中提取 BV 号。"""
+
     m = _BV_PATTERN.search(url)
     return m.group(1) if m else None
 
@@ -165,6 +166,8 @@ async def parse_bilibili_url(
             "video_id": video_id,
             "title": title,
             "uploader": uploader,
+            "uploader_uid": uploader_id,
+            "description": description or "",
             "duration_seconds": duration,
             "cover_url": cover_url,
             "bvid": resolved_bvid,

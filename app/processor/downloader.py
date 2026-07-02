@@ -129,5 +129,5 @@ async def download_video(
     return StageResult(
         success=True,
         artifacts={"video_path": video_path},
-        metadata={"quality": quality},
+        metadata={"quality": quality, "file_size": os.path.getsize(video_path)},
     )

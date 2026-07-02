@@ -23,3 +23,25 @@ class MockStore:
 
     async def delete_chunks(self, note_id: str) -> None:
         self._chunks.pop(note_id, None)
+    async def store_note(self, video_id: str, note_markdown: str, video_title: str) -> int:
+        """Mock 存储笔记：切片后存入内存字典。
+
+        模拟 VectorStore.store_note 的行为，
+        不依赖 ChromaDB / EmbeddingClient。
+        """
+        from app.store.chunker import semantic_chunk
+        chunks = semantic_chunk(note_markdown)
+        chunk_bases = []
+        for idx, chunk in enumerate(chunks):
+            chunk_bases.append(ChunkBase(
+                chunk_id=f"{video_id}_{idx}",
+                video_id=0,
+                note_id=hash(video_id) % 10000,
+                content=chunk["content"],
+                chunk_index=idx,
+                section_title=chunk["title"],
+                start_time=chunk.get("start_time", 0),
+                end_time=chunk.get("end_time", 0),
+            ))
+        self._chunks[video_id] = chunk_bases
+        return len(chunks)

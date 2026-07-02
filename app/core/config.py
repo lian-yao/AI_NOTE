@@ -3,16 +3,21 @@
 优先级：环境变量 > .env > config.yaml > 默认值
 """
 from pathlib import Path
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.paths import project_root
 
 _default_data_dir = str(project_root() / "data")
+
+# 加载 .env 所有变量到系统环境（包括非 VN_ 前缀的，如 HF_ENDPOINT）
+load_dotenv(project_root() / ".env")
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        extra="ignore",
         env_prefix="VN_",
     )
 

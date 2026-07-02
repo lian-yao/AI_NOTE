@@ -5,8 +5,14 @@ from app.llm.client import get_llm_client
 from app.core.logger import logger
 
 class NoteGenerator:
-    def __init__(self):
-        self.llm = get_llm_client()
+    """笔记生成器，将转录文本转化为结构化 Markdown 笔记。"""
+    def __init__(self, llm=None):
+        """初始化笔记生成器。
+
+        Args:
+            llm: LLM 客户端实例。不传则用 get_llm_client() 自动创建。
+        """
+        self.llm = llm or get_llm_client()
 
     async def generate(self, transcript_text: str, video_meta: Dict[str, Any]) -> Dict[str, Any]:
         """返回包含 markdown_content, summary, keywords, sections 的字典"""
