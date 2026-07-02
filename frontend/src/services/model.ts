@@ -21,6 +21,9 @@ const withParams = (opts: CallOpts | undefined, params: Record<string, unknown>)
 })
 const LOCAL_PROVIDERS_KEY = 'ai-note:providers:fallback'
 const LOCAL_MODELS_KEY = 'ai-note:models:fallback'
+const DEV_PROVIDER_ID = 'mock-provider'
+const DEV_MODEL_ID = 10001
+const DEV_MODEL_NAME = 'mock-llm'
 
 export type ProviderPayload = Partial<
   Pick<IProvider, 'id' | 'name' | 'logo' | 'type' | 'enabled'>
@@ -70,6 +73,27 @@ interface EnabledModelItem {
   created_at?: string
 }
 
+const defaultProvider: ProviderApiItem = {
+  id: DEV_PROVIDER_ID,
+  name: '开发 Mock Provider',
+  logo: 'custom',
+  type: 'mock',
+  base_url: '',
+  enabled: true,
+  has_api_key: false,
+  api_key: '',
+  created_at: '2026-07-02T00:00:00.000Z',
+  updated_at: '2026-07-02T00:00:00.000Z',
+}
+
+const defaultModel: EnabledModelItem = {
+  id: DEV_MODEL_ID,
+  provider_id: DEV_PROVIDER_ID,
+  model_name: DEV_MODEL_NAME,
+  enabled: true,
+  created_at: '2026-07-02T00:00:00.000Z',
+}
+
 function normalizeProvider(provider: ProviderApiItem) {
   const hasApiKey = Boolean(provider.has_api_key)
   return {
@@ -108,12 +132,22 @@ function readLocalProviders(): ProviderApiItem[] {
   return readLocalValue<ProviderApiItem[]>(LOCAL_PROVIDERS_KEY, [])
 }
 
+function readLocalProvidersWithDefault(): ProviderApiItem[] {
+  const providers = readLocalProviders()
+  return providers.length > 0 ? providers : [defaultProvider]
+}
+
 function writeLocalProviders(items: ProviderApiItem[]) {
   writeLocalValue(LOCAL_PROVIDERS_KEY, items)
 }
 
 function readLocalModels(): EnabledModelItem[] {
   return readLocalValue<EnabledModelItem[]>(LOCAL_MODELS_KEY, [])
+}
+
+function readLocalModelsWithDefault(): EnabledModelItem[] {
+  const models = readLocalModels()
+  return models.length > 0 ? models : [defaultModel]
 }
 
 function writeLocalModels(items: EnabledModelItem[]) {
@@ -187,7 +221,7 @@ export const getProviderList = async (opts?: CallOpts) => {
     )
     return getItems(res).map(normalizeProvider)
   } catch (error) {
-    if (isNotFoundError(error)) return readLocalProviders().map(normalizeProvider)
+    if (isNotFoundError(error)) return readLocalProvidersWithDefault().map(normalizeProvider)
     throw error
   }
 }
@@ -200,7 +234,7 @@ export const getProviderById = async (id: string, opts?: CallOpts) => {
     )
     return normalizeProvider(res)
   } catch (error) {
-    const localProvider = readLocalProviders().find(provider => provider.id === id)
+    const localProvider = readLocalProvidersWithDefault().find(provider => provider.id === id)
     if (isNotFoundError(error) && localProvider) return normalizeProvider(localProvider)
     throw error
   }
@@ -261,7 +295,7 @@ export const fetchModels = async (providerId: string, opts?: CallOpts) => {
     )
   } catch (error) {
     if (isNotFoundError(error)) {
-      const data = readLocalModels()
+      const data = readLocalModelsWithDefault()
         .filter(model => model.provider_id === providerId)
         .map(model => ({ id: model.model_name, model_name: model.model_name }))
       return { data }
@@ -282,7 +316,7 @@ export const fetchEnableModelById = async (id: string, opts?: CallOpts) => {
     return getItems(res)
   } catch (error) {
     if (isNotFoundError(error)) {
-      return readLocalModels().filter(model => model.provider_id === id)
+      return readLocalModelsWithDefault().filter(model => model.provider_id === id)
     }
     throw error
   }
@@ -311,7 +345,7 @@ export const fetchEnableModels = async (opts?: CallOpts) => {
     )
     return getItems(res)
   } catch (error) {
-    if (isNotFoundError(error)) return readLocalModels()
+    if (isNotFoundError(error)) return readLocalModelsWithDefault()
     throw error
   }
 }
