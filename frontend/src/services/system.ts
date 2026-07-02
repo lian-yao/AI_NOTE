@@ -26,6 +26,48 @@ export const getSysHealth = async (opts?: CallOpts): Promise<SysHealth> => {
 
 export const systemCheck = getSysHealth
 
+export interface SystemConfig {
+  llm_provider: string
+  llm_model?: string
+  transcriber_mode: string
+  whisper_model_size: string
+  whisper_device: string
+  embedding_model: string
+  retrieval_top_k: number
+  data_dir: string
+  video_retention: string
+}
+
+export interface SystemStats {
+  total_videos: number
+  completed_videos: number
+  total_notes: number
+  total_chunks: number
+  total_duration_hours: number
+  storage_usage_bytes: number
+  disk_free_bytes: number
+}
+
+export const getSystemConfig = async (opts?: CallOpts): Promise<SystemConfig> => {
+  return await request.get('/system/config', cfg(opts))
+}
+
+export const updateSystemConfig = async (
+  data: Partial<
+    Pick<SystemConfig, 'llm_provider' | 'transcriber_mode' | 'retrieval_top_k' | 'whisper_model_size' | 'whisper_device'>
+  >,
+): Promise<{ updated_fields: string[] }> => {
+  return await request.put('/system/config', data)
+}
+
+export const saveSystemConfig = async (): Promise<{ message: string }> => {
+  return await request.post('/system/config/save')
+}
+
+export const getSystemStats = async (opts?: CallOpts): Promise<SystemStats> => {
+  return await request.get('/system/stats', cfg(opts))
+}
+
 export interface DeployStatus {
   backend: {
     status: string

@@ -111,6 +111,27 @@ export const askQuestion = async (data: {
   }
 }
 
+export const askGlobalQuestion = async (data: {
+  question: string
+  video_ids?: string[]
+  top_k?: number
+}): Promise<AskResponse> => {
+  const res = await request.post<unknown, QAResponse>(
+    '/qa/ask-global',
+    {
+      question: data.question,
+      video_ids: data.video_ids,
+      top_k: data.top_k ?? 5,
+    },
+    { timeout: 60000 },
+  )
+
+  return {
+    answer: res.answer,
+    sources: res.sources?.map(searchResultToSource) || (res.references || []).map(referenceToSource),
+  }
+}
+
 export const getChatStatus = async (
   taskId: string,
   videoId?: string,

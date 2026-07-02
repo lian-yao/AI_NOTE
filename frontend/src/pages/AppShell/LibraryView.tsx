@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import type { Task } from '@/store/taskStore'
 import { useTaskStore } from '@/store/taskStore'
+import { getNoteRaw, listVideos, type VideoItem } from '@/services/video'
 import { formatDate, formatTime, getTaskAuthor, getTaskCoverUrl, getTaskTitle } from './utils'
 
 interface LibraryFolder {
@@ -34,9 +35,62 @@ function loadJson<T>(key: string, fallback: T): T {
   }
 }
 
+function normalizeVideoStatus(status: string): Task['status'] {
+  const value = status.toLowerCase()
+  if (value === 'completed' || value === 'success') return 'SUCCESS'
+  if (value === 'failed') return 'FAILED'
+  if (value === 'pending') return 'PENDING'
+  if (value === 'downloading') return 'DOWNLOADING'
+  if (value === 'transcribing') return 'TRANSCRIBING'
+  if (value === 'generating') return 'SUMMARIZING'
+  if (value === 'storing') return 'SAVING'
+  return 'RUNNING'
+}
+
+function backendVideoToTask(video: VideoItem, markdown: string): Task {
+  return {
+    id: video.video_id,
+    status: normalizeVideoStatus(video.status),
+    markdown:
+      markdown ||
+      `# ${video.title || '后端视频笔记'}\n\n后端已返回视频记录，笔记原文暂未返回。`,
+    transcript: {
+      full_text: '',
+      language: 'zh-CN',
+      raw: null,
+      segments: [],
+    },
+    audioMeta: {
+      cover_url: video.cover_url || '',
+      duration: video.duration_seconds || 0,
+      file_path: video.audio_path || '',
+      platform: 'bilibili',
+      raw_info: {
+        uploader: video.uploader || '',
+        backend_video: video,
+      },
+      title: video.title || video.url,
+      video_id: video.video_id,
+    },
+    createdAt: video.created_at || new Date().toISOString(),
+    formData: {
+      video_url: video.url,
+      link: true,
+      screenshot: false,
+      platform: 'bilibili',
+      quality: '1080p',
+      model_name: 'backend',
+      provider_id: 'backend',
+      format: ['summary'],
+      style: 'minimal',
+    },
+  }
+}
+
 export default function LibraryView({ onSelectTask }: LibraryViewProps) {
   const tasks = useTaskStore(state => state.tasks)
   const removeTask = useTaskStore(state => state.removeTask)
+  const upsertTask = useTaskStore(state => state.upsertTask)
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null)
   const [folders, setFolders] = useState<LibraryFolder[]>(() =>
     loadJson<LibraryFolder[]>(FOLDER_STORAGE_KEY, [{ id: 'default', name: '默认收藏' }]),
@@ -48,6 +102,8 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
   const [newFolderName, setNewFolderName] = useState('')
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const [backendSyncing, setBackendSyncing] = useState(false)
+  const [backendSyncFailed, setBackendSyncFailed] = useState(false)
 
   useEffect(() => {
     localStorage.setItem(FOLDER_STORAGE_KEY, JSON.stringify(folders))
@@ -56,6 +112,36 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
   useEffect(() => {
     localStorage.setItem(ITEM_FOLDER_STORAGE_KEY, JSON.stringify(itemFolders))
   }, [itemFolders])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const syncBackendVideos = async () => {
+      setBackendSyncing(true)
+      setBackendSyncFailed(false)
+      try {
+        const res = await listVideos({ page: 1, page_size: 50 }, { silent: true })
+        await Promise.all(
+          res.items.map(async video => {
+            const markdown =
+              video.status === 'completed'
+                ? await getNoteRaw(video.video_id, { silent: true }).catch(() => '')
+                : ''
+            if (!cancelled) upsertTask(backendVideoToTask(video, markdown))
+          }),
+        )
+      } catch {
+        if (!cancelled) setBackendSyncFailed(true)
+      } finally {
+        if (!cancelled) setBackendSyncing(false)
+      }
+    }
+
+    syncBackendVideos()
+    return () => {
+      cancelled = true
+    }
+  }, [upsertTask])
 
   const displayedTasks = useMemo(() => {
     const keyword = search.trim().toLowerCase()
@@ -115,7 +201,16 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
   return (
     <div className="flex h-full flex-1 flex-col bg-[#0E0E0E]">
       <div className="flex h-20 shrink-0 items-center justify-between border-b border-neutral-800 bg-[#111111] px-8">
-        <h1 className="text-2xl font-bold text-neutral-100">知识库</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-neutral-100">知识库</h1>
+          <div className="mt-1 text-xs text-neutral-500">
+            {backendSyncing
+              ? '正在同步后端视频...'
+              : backendSyncFailed
+                ? '后端视频同步失败'
+                : `共 ${tasks.length} 条记录`}
+          </div>
+        </div>
         <div className="flex items-center gap-4">
           <div className="relative">
             <Search

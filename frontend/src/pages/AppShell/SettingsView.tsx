@@ -8,6 +8,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileText as FileTextIcon,
   FolderSearch,
   HardDrive,
   Key,
@@ -19,6 +20,7 @@ import {
   Server,
   Settings2,
   Trash2,
+  Video as VideoIcon,
   X,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -45,7 +47,7 @@ import {
   type ModelStatus,
   type TranscriberConfig,
 } from '@/services/transcriber'
-import { getDeployStatus, type DeployStatus } from '@/services/system'
+import { getDeployStatus, getSystemStats, type DeployStatus, type SystemStats } from '@/services/system'
 import { isSkippedApiResult } from '@/services/fallback'
 import { IconSwitch } from './components/IconSwitch'
 import BackendInitDialog from '@/components/BackendInitDialog'
@@ -1701,16 +1703,24 @@ function TranscriberSection() {
 
 function MonitorSection() {
   const [status, setStatus] = useState<DeployStatus | null>(null)
+  const [stats, setStats] = useState<SystemStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
 
   const load = async (silent = false) => {
     setLoading(true)
     try {
-      setStatus(await getDeployStatus(silent ? { silent: true } : undefined))
+      const opts = silent ? { silent: true } : undefined
+      const [deployStatus, systemStats] = await Promise.all([
+        getDeployStatus(opts),
+        getSystemStats(opts),
+      ])
+      setStatus(deployStatus)
+      setStats(systemStats)
       setLoadFailed(false)
     } catch {
       setStatus(null)
+      setStats(null)
       setLoadFailed(true)
     } finally {
       setLoading(false)
@@ -1769,6 +1779,30 @@ function MonitorSection() {
           title="CUDA"
           value={status?.cuda.available ? status.cuda.gpu_name || '已启用' : '未启用'}
           ok={status?.cuda.available}
+        />
+        <StatusCard
+          icon={<VideoIcon size={18} />}
+          title="视频"
+          value={`${stats?.completed_videos ?? 0}/${stats?.total_videos ?? 0} 已完成`}
+          ok={stats ? true : undefined}
+        />
+        <StatusCard
+          icon={<FileTextIcon size={18} />}
+          title="笔记"
+          value={`${stats?.total_notes ?? 0} 篇 / ${stats?.total_chunks ?? 0} chunks`}
+          ok={stats ? true : undefined}
+        />
+        <StatusCard
+          icon={<Database size={18} />}
+          title="存储"
+          value={`${formatBytes(stats?.storage_usage_bytes ?? 0)} 已用，${formatBytes(stats?.disk_free_bytes ?? 0)} 可用`}
+          ok={stats ? true : undefined}
+        />
+        <StatusCard
+          icon={<Activity size={18} />}
+          title="时长"
+          value={`${stats?.total_duration_hours ?? 0} 小时`}
+          ok={stats ? true : undefined}
         />
       </div>
     </section>

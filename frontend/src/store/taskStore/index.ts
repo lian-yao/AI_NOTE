@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { delete_task, generateNote } from '@/services/note.ts'
+import { retryBackendTask } from '@/services/task'
 import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 import { get, set, del } from 'idb-keyval'
@@ -76,6 +77,7 @@ interface TaskStore {
   tasks: Task[]
   currentTaskId: string | null
   addPendingTask: (taskId: string, platform: string, formData: Task['formData']) => void
+  upsertTask: (task: Task) => void
   updateTaskContent: (id: string, data: Partial<Omit<Task, 'id' | 'createdAt'>>) => void
   removeTask: (id: string) => void
   clearTasks: () => void
@@ -121,6 +123,16 @@ export const useTaskStore = create<TaskStore>()(
           ],
           currentTaskId: taskId, // 默认设置为当前任务
         })),
+
+      upsertTask: task =>
+        set(state => {
+          const exists = state.tasks.some(item => item.id === task.id)
+          return {
+            tasks: exists
+              ? state.tasks.map(item => (item.id === task.id ? { ...item, ...task } : item))
+              : [task, ...state.tasks],
+          }
+        }),
 
       updateTaskContent: (id, data) =>
           set(state => ({
@@ -189,6 +201,25 @@ export const useTaskStore = create<TaskStore>()(
           ...payload,
         }
         try {
+          if (task.status === 'FAILED') {
+            try {
+              await retryBackendTask(id, { silent: true })
+              set(state => ({
+                tasks: state.tasks.map(t =>
+                  t.id === id
+                    ? {
+                      ...t,
+                      status: 'PENDING',
+                    }
+                    : t,
+                ),
+              }))
+              return
+            } catch {
+              // 本地合成任务或后端没有该任务时，继续走重新提交兜底。
+            }
+          }
+
           await generateNote({
             ...newFormData,
             task_id: id,

@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import type { Task } from '@/store/taskStore'
 import { useTaskStore } from '@/store/taskStore'
+import { getTaskLogs, type TaskLogItem } from '@/services/task'
 import {
   formatDate,
   formatTime,
@@ -289,6 +290,24 @@ function StatusBlock({ task }: { task: Task }) {
   const isFailed = task.status === 'FAILED'
   const isSuccess = task.status === 'SUCCESS'
   const label = statusLabel[task.status] || task.status
+  const [logs, setLogs] = useState<TaskLogItem[]>([])
+
+  useEffect(() => {
+    if (isSuccess) return
+    let cancelled = false
+
+    getTaskLogs(task.id, { page: 1, page_size: 5 }, { silent: true })
+      .then(res => {
+        if (!cancelled) setLogs(res.items || [])
+      })
+      .catch(() => {
+        if (!cancelled) setLogs([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isSuccess, task.id])
 
   if (isSuccess) return null
 
@@ -309,6 +328,24 @@ function StatusBlock({ task }: { task: Task }) {
           {isFailed ? '请检查后端日志或稍后重试。' : '任务正在执行，完成后会自动刷新。'}
         </p>
       </div>
+      {logs.length > 0 && (
+        <div className="w-full max-w-xl rounded-xl border border-neutral-800 bg-[#161616] p-4 text-left">
+          <div className="mb-3 text-xs font-medium text-neutral-500">后端任务日志</div>
+          <div className="space-y-2">
+            {logs.map((log, index) => (
+              <div key={log.id || `${log.created_at}-${index}`} className="text-xs text-neutral-400">
+                <span className="mr-2 font-mono text-neutral-600">
+                  {formatDate(log.created_at)}
+                </span>
+                <span className="mr-2 rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-300">
+                  {log.level}
+                </span>
+                <span>{log.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
