@@ -112,7 +112,7 @@ function createPreviewTask(
       link: true,
       screenshot: false,
       platform: 'bilibili',
-      quality: 'medium',
+      quality: '1080p',
       model_name: 'preview',
       provider_id: 'preview',
       format: ['summary', 'toc'],

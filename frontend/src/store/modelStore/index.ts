@@ -18,7 +18,7 @@ interface IModel {
 }
 
 interface IModelListItem {
-  id: string
+  id: string | number
   provider_id: string
   model_name: string
   created_at?: string
@@ -68,12 +68,12 @@ export const useModelStore = create<ModelStore>()(
 
         let models: IModel[] = []
 
-        // 兼容 SyncPage 分页对象与普通数组两种格式
-        if (Array.isArray(res.models)) {
-          models = res.models
-        } else if (res.models?.data && Array.isArray(res.models.data)) {
-          models = res.models.data
-        }
+        const rawModels = Array.isArray(res.models)
+          ? res.models
+          : Array.isArray(res.models?.data)
+            ? res.models.data
+            : []
+        models = rawModels as IModel[]
 
         set({ models })
       } catch (error) {
@@ -99,26 +99,22 @@ export const useModelStore = create<ModelStore>()(
     //  新增模型逻辑
     addNewModel: async (providerId: string, modelId: string) => {
       try {
-        const res = await addModel({ provider_id: providerId, model_name: modelId })
+        await addModel({ provider_id: providerId, model_name: modelId })
 
-        if (res.code === 0) {
-          console.log('新增模型成功:', modelId)
-          set((state) => ({
-            models: [
-              ...state.models,
-              {
-                id: modelId,
-                created: Date.now(),
-                object: 'model',
-                owned_by: '',
-                permission: '',
-                root: '',
-              },
-            ],
-          }))
-        } else {
-          console.error('新增模型失败', res.msg)
-        }
+        console.log('新增模型成功:', modelId)
+        set((state) => ({
+          models: [
+            ...state.models,
+            {
+              id: modelId,
+              created: Date.now(),
+              object: 'model',
+              owned_by: '',
+              permission: '',
+              root: '',
+            },
+          ],
+        }))
       } catch (error) {
         console.error('添加模型出错', error)
       }

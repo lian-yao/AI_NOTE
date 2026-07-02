@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { IProvider, IResponse } from '@/types'
+import { IProvider } from '@/types'
 import {
   addProvider,
   getProviderById,
@@ -11,11 +11,11 @@ interface ProviderStore {
   provider: IProvider[]
   setProvider: (provider: IProvider) => void
   setAllProviders: (providers: IProvider[]) => void
-  getProviderById: (id: number) => IProvider | undefined
+  getProviderById: (id: string) => IProvider | undefined
   getProviderList: () => IProvider[]
   fetchProviderList: (opts?: { silent?: boolean }) => Promise<boolean>
-  loadProviderById: (id: string, opts?: { silent?: boolean }) => Promise<void>
-  addNewProvider: (provider: IProvider) => Promise<void>
+  loadProviderById: (id: string, opts?: { silent?: boolean }) => Promise<IProvider | void>
+  addNewProvider: (provider: IProvider) => Promise<string | void>
   updateProvider: (provider: IProvider) => Promise<void>
 }
 
@@ -38,7 +38,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   // 设置整个 provider 列表
   setAllProviders: providers => set({ provider: providers }),
   loadProviderById: async (id: string, opts) => {
-    const res:IResponse<IProvider> = await getProviderById(id, opts)
+    const res = await getProviderById(id, opts)
 
       const item = res
       return {
@@ -59,14 +59,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       base_url: provider.baseUrl,
     }
     try {
-      const res = await addProvider(payload)
-      if (res.data.code === 0) {
-        const item = res.data.data
-        console.log('Provider ', item)
-
-        await get().fetchProviderList()
-        return  item
-      }
+      const id = await addProvider(payload)
+      await get().fetchProviderList()
+      return id
     } catch (error) {
       console.error('Error fetching provider:', error)
     }

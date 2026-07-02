@@ -58,12 +58,12 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
   const addMessage = useChatStore(state => state.addMessage)
   const clearChat = useChatStore(state => state.clearChat)
 
-  const currentTaskId = useTaskStore(state => state.currentTaskId)
   const tasks = useTaskStore(state => state.tasks)
   const currentTask = useMemo(
-    () => tasks.find(t => t.id === currentTaskId) ?? null,
-    [tasks, currentTaskId],
+    () => tasks.find(t => t.id === taskId) ?? null,
+    [tasks, taskId],
   )
+  const videoId = currentTask?.audioMeta?.video_id
 
   // 检查索引状态，未索引时自动触发，indexing 时轮询
   useEffect(() => {
@@ -73,13 +73,13 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
 
     const poll = async () => {
       try {
-        const res = await getChatStatus(taskId)
+        const res = await getChatStatus(taskId, videoId)
         if (cancelled) return
         setIndexStatus(res.status)
 
         if (res.status === 'idle') {
           // 未索引，触发后台索引
-          await indexTask(taskId)
+          await indexTask(taskId, videoId)
           if (!cancelled) setIndexStatus('indexing')
         }
 
@@ -97,7 +97,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [taskId])
+  }, [taskId, videoId])
 
   const handleSend = useCallback(
     async (value: string) => {
@@ -106,8 +106,8 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
 
       const providerId = currentTask?.formData?.provider_id
       const modelName = currentTask?.formData?.model_name
-      if (!providerId || !modelName) {
-        toast.error('无法获取模型配置，请确认任务已完成')
+      if (!providerId || !modelName || !videoId) {
+        toast.error('无法获取问答所需的视频或模型配置，请确认任务已完成')
         return
       }
 
@@ -119,6 +119,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
         const history = messages.map(m => ({ role: m.role, content: m.content }))
         const res = await askQuestion({
           task_id: taskId,
+          video_id: videoId,
           question,
           history,
           provider_id: providerId,
@@ -135,7 +136,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
         setLoading(false)
       }
     },
-    [loading, taskId, currentTask, messages, addMessage],
+    [loading, taskId, currentTask, videoId, messages, addMessage],
   )
 
   // 转换为 Bubble.List 的数据格式
@@ -217,7 +218,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
           onClick={async () => {
             setIndexStatus('indexing')
             try {
-              await indexTask(taskId)
+              await indexTask(taskId, videoId)
             } catch {
               toast.error('索引请求失败')
               setIndexStatus('failed')

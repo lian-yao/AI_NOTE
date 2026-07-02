@@ -4,6 +4,7 @@ import { addProvider, addModel, testConnection, getProviderList, updateProviderB
 import { updateTranscriberConfig } from '@/services/transcriber'
 import type { IProvider } from '@/types'
 import logo from '@/assets/logo.png'
+import { getApiBaseURL } from '@/utils/api'
 
 // 后端 R.error / ProviderError 的形状是 { code, msg, data }，没有 .message。
 // 直接 ${e} 会渲染成 [object Object]，这里统一抽取可读文案。
@@ -23,16 +24,13 @@ function errText(e: unknown): string {
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 // 后端连通性自检不走共享 axios（会弹 toast），用裸 fetch 避免启动期 toast 叠堆
-function getBackendBase(): string {
-  const fromEnv = import.meta.env.VITE_API_BASE_URL
-  return ((fromEnv && fromEnv.length > 0) ? fromEnv : '/api').replace(/\/$/, '')
-}
 async function pingBackend(): Promise<boolean> {
   try {
-    const res = await fetch(`${getBackendBase()}/sys_check`)
+    const res = await fetch(`${getApiBaseURL()}/system/ready`)
+    if (res.status === 404) return true
     if (!res.ok) return false
     const json = await res.json().catch(() => null)
-    return json?.code === 0
+    return json?.code === 0 && json?.data?.ready !== false
   }
   catch {
     return false
@@ -145,7 +143,7 @@ const Onboarding = () => {
       let pid: string | undefined
 
       // 后端 seed_default_providers() 会预置 OpenAI / DeepSeek / Qwen 等同名供应商，
-      // 直接 add_provider 撞名会报「供应商名称已存在」。所以：撞名时改为
+      // 直接创建 Provider 撞名会报「供应商名称已存在」。所以：撞名时改为
       // 「找到那个已存在的同名供应商 → 更新它的 key / base_url」而不是新建。
       // 这些调用都带 silent:true —— 撞名是预期内的，不弹全局红 toast。
       try {
@@ -156,7 +154,7 @@ const Onboarding = () => {
           type: 'custom',
           logo: 'custom',
         }, { silent: true })
-        pid = (res?.data ?? res) as string | undefined
+        pid = res
         if (!pid) throw new Error('后端未返回 provider id')
       }
       catch (addErr: unknown) {

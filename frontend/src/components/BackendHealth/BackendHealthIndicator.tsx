@@ -1,24 +1,19 @@
 import { useEffect, useState } from 'react'
 import { useBackendEvents } from './useBackendEvents'
 import BackendLogPanel from './BackendLogPanel'
+import { getApiBaseURL } from '@/utils/api'
 
 // 健康度判定：
-// - 绿：sidecar running 且 /sys_health 通
-// - 黄：sidecar running 但 /sys_health 失败 (ffmpeg 缺等)
-// - 红：sidecar terminated 或 /sys_health 连续 3 次失败
+// - 绿：sidecar running 且 /system/health 通
+// - 黄：sidecar running 但 /system/health 失败 (ffmpeg 缺等)
+// - 红：sidecar terminated 或 /system/health 连续 3 次失败
 
 type Health = 'green' | 'yellow' | 'red' | 'unknown'
 
 const HEALTH_POLL_MS = 5000
 // 路径不带 /api/，因为 backendBase() 已经把它包进 baseURL 了（同 axios 实例的语义）。
-// 之前写 '/api/sys_health' + base='http://host/api' = 双 /api → 一直 404。
-const SYS_HEALTH_PATH = '/sys_health'
-
-function backendBase(): string {
-  // 与 utils/request.ts 的 baseURL 计算保持一致：env 没设走 '/api' 兜底。
-  const fromEnv = import.meta.env.VITE_API_BASE_URL
-  return ((fromEnv && fromEnv.length > 0) ? fromEnv : '/api').replace(/\/$/, '')
-}
+// 之前写 '/api/system/health' + base='http://host/api' = 双 /api → 一直 404。
+const SYS_HEALTH_PATH = '/system/health'
 
 const BackendHealthIndicator = () => {
   const { status, isTauri, exitCode, logs, restart, copyLogs } = useBackendEvents()
@@ -33,8 +28,9 @@ const BackendHealthIndicator = () => {
 
     async function ping() {
       try {
-        const res = await fetch(`${backendBase()}${SYS_HEALTH_PATH}`)
-        const ok = res.ok
+        const res = await fetch(`${getApiBaseURL()}${SYS_HEALTH_PATH}`)
+        const json = await res.json().catch(() => null)
+        const ok = res.ok && json?.code === 0
         if (!mounted) return
         if (ok) {
           setHealthCheckFailures(0)
