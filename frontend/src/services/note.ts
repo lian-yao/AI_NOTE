@@ -2,6 +2,12 @@ import request from '@/utils/request'
 import toast from 'react-hot-toast'
 import type { AudioMeta, TaskStatus, Transcript } from '@/store/taskStore'
 
+interface CallOpts {
+  silent?: boolean
+}
+
+const cfg = (opts?: CallOpts) => (opts?.silent ? { suppressToast: true } : undefined)
+
 export interface GenerateNotePayload {
   video_url: string
   platform: string
@@ -36,6 +42,31 @@ export interface TaskStatusResponse {
     transcript: Transcript
     audio_meta: AudioMeta
   } | null
+}
+
+export interface NoteMeta {
+  id: number
+  video_id: number
+  file_path: string
+  summary?: string | null
+  keywords?: string | null
+  total_chunks: number
+  section_count: number
+  char_count: number
+  model_used?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateNotePayload {
+  video_id: number
+  file_path: string
+  summary?: string | null
+  keywords?: string | null
+  total_chunks?: number
+  section_count?: number
+  char_count?: number
+  model_used?: string | null
 }
 
 const validQualities = new Set(['360p', '480p', '720p', '1080p'])
@@ -162,6 +193,21 @@ export const generateNote = async (data: GenerateNotePayload): Promise<GenerateN
   const normalized = normalizeGenerateResponse(response, data)
   toast.success(normalized.result ? '笔记已生成' : '笔记生成任务已提交')
   return normalized
+}
+
+export const listNotes = async (opts?: CallOpts): Promise<NoteMeta[]> => {
+  return await request.get('/notes/', cfg(opts))
+}
+
+export const getNote = async (noteId: number | string, opts?: CallOpts): Promise<NoteMeta> => {
+  return await request.get(`/notes/${encodeURIComponent(String(noteId))}`, cfg(opts))
+}
+
+export const createNote = async (
+  data: CreateNotePayload,
+  opts?: CallOpts,
+): Promise<NoteMeta> => {
+  return await request.post('/notes/', data, cfg(opts))
 }
 
 export const delete_task = async ({ video_id }: { video_id: string; platform: string }) => {

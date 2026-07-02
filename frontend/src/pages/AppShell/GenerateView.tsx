@@ -12,6 +12,7 @@ import {
 import toast from 'react-hot-toast'
 import { generateNote } from '@/services/note'
 import { uploadFile } from '@/services/upload'
+import { parseVideo, type ParseVideoResponse } from '@/services/video'
 import { useModelStore } from '@/store/modelStore'
 import { useTaskStore } from '@/store/taskStore'
 import { noteStyles } from '@/constant/note'
@@ -20,6 +21,29 @@ interface GenerateViewProps {
   backendReady?: boolean
   onSubmitted: () => void
   onOpenSettings: () => void
+}
+
+function audioMetaFromParsed(
+  parsed: ParseVideoResponse,
+  platform: string,
+  targetUrl: string,
+  fallbackVideoId?: string,
+) {
+  return {
+    cover_url: parsed.cover_url || '',
+    duration: parsed.duration_seconds || 0,
+    file_path: '',
+    platform,
+    raw_info: {
+      uploader: parsed.uploader || '',
+      uploader_uid: parsed.uploader_uid || '',
+      bvid: parsed.bvid || '',
+      avid: parsed.avid || null,
+      description: parsed.description || '',
+    },
+    title: parsed.title || targetUrl,
+    video_id: fallbackVideoId || parsed.video_id || '',
+  }
 }
 
 function ModelSelectionModal({
@@ -218,6 +242,10 @@ export default function GenerateView({
 
     setIsSubmitting(true)
     try {
+      const parsed =
+        platform === 'bilibili'
+          ? await parseVideo(targetUrl, { silent: true }).catch(() => null)
+          : null
       const payload = {
         video_url: targetUrl,
         platform,
@@ -235,12 +263,22 @@ export default function GenerateView({
       }
       const data = await generateNote(payload)
       addPendingTask(data.task_id, platform, payload)
+      if (parsed) {
+        updateTaskContent(data.task_id, {
+          audioMeta: audioMetaFromParsed(parsed, platform, targetUrl, data.video_id),
+        })
+      }
       if (data.result) {
         updateTaskContent(data.task_id, {
           status: 'SUCCESS',
           markdown: data.result.markdown,
           transcript: data.result.transcript,
-          audioMeta: data.result.audio_meta,
+          audioMeta: parsed
+            ? {
+              ...data.result.audio_meta,
+              ...audioMetaFromParsed(parsed, platform, targetUrl, data.video_id),
+            }
+            : data.result.audio_meta,
         })
       }
       setCurrentTask(data.task_id)

@@ -4,6 +4,7 @@ import {
   skippedApiResult,
   writeLocalValue,
 } from '@/services/fallback'
+import { getSystemConfig, updateSystemConfig } from '@/services/system'
 
 interface CallOpts {
   silent?: boolean
@@ -71,6 +72,15 @@ function readLocalTranscriberConfig(): TranscriberConfig {
   )
 }
 
+async function readSystemTranscriberConfig(opts?: CallOpts): Promise<TranscriberConfig> {
+  const systemConfig = await getSystemConfig(opts)
+  return {
+    ...readLocalTranscriberConfig(),
+    transcriber_type: systemConfig.transcriber_mode || defaultTranscriberConfig.transcriber_type,
+    whisper_model_size: systemConfig.whisper_model_size || defaultTranscriberConfig.whisper_model_size,
+  }
+}
+
 function writeLocalTranscriberConfig(data: Partial<TranscriberConfig>) {
   writeLocalValue(LOCAL_TRANSCRIBER_CONFIG_KEY, {
     ...readLocalTranscriberConfig(),
@@ -95,7 +105,9 @@ export const getTranscriberConfig = async (opts?: CallOpts): Promise<Transcriber
   try {
     return await request.get('/transcribers/config', cfg(opts))
   } catch (error) {
-    if (isNotFoundError(error)) return readLocalTranscriberConfig()
+    if (isNotFoundError(error)) {
+      return await readSystemTranscriberConfig(opts).catch(() => readLocalTranscriberConfig())
+    }
     throw error
   }
 }
@@ -108,6 +120,10 @@ export const updateTranscriberConfig = async (data: {
     return await request.put('/transcribers/config', data, cfg())
   } catch (error) {
     if (isNotFoundError(error)) {
+      await updateSystemConfig({
+        transcriber_mode: data.transcriber_type,
+        whisper_model_size: data.whisper_model_size,
+      }).catch(() => undefined)
       writeLocalTranscriberConfig(data)
       return readLocalTranscriberConfig()
     }
