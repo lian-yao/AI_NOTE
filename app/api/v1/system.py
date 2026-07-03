@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from pydantic import BaseModel  # 已添加，用于 ConfigUpdate
 
 from app.core.database import get_db
 from app.core.config import settings
@@ -59,4 +60,101 @@ async def system_health(request: Request, db: Session = Depends(get_db)):
             "disk_space": disk_status,
             "uptime_seconds": uptime,
         },
+    }
+
+
+@router.get("/config")
+def get_system_config():
+    """获取系统配置（不包含敏感字段）。"""
+    return {
+        "llm_provider": settings.llm_provider,
+        "llm_model": getattr(settings, 'llm_model', 'qwen-plus'),
+        "transcriber_mode": "local",
+        "whisper_model_size": settings.whisper_model_size,
+        "whisper_device": settings.whisper_device,
+        "embedding_model": "text-embedding-v3",
+        "retrieval_top_k": settings.retrieval_top_k,
+        "data_dir": settings.data_dir,
+        "video_retention": getattr(settings, 'video_retention', 'processed'),
+    }
+
+
+_runtime_config: dict = {}
+
+
+class ConfigUpdate(BaseModel):
+    llm_provider: str | None = None
+    transcriber_mode: str | None = None
+    retrieval_top_k: int | None = None
+    whisper_model_size: str | None = None
+    whisper_device: str | None = None
+
+
+@router.put("/config")
+def update_system_config(body: ConfigUpdate):
+    """更新运行时配置（临时生效，下次重启恢复 config.yaml 值）。"""
+    updated = []
+    for key in ('llm_provider', 'transcriber_mode', 'retrieval_top_k', 'whisper_model_size', 'whisper_device'):
+        val = getattr(body, key, None)
+        if val is not None:
+            _runtime_config[key] = val
+            updated.append(key)
+    return {"updated_fields": updated}
+
+
+@router.post("/config/save")
+def save_system_config():
+    """将当前运行时配置持久化到 config.yaml。"""
+    import yaml
+    cfg_path = Path("config.yaml")
+    if not cfg_path.exists():
+        return {"message": "config.yaml 不存在，跳过保存"}
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    cfg.update(_runtime_config)
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        yaml.dump(cfg, f, allow_unicode=True)
+    return {"message": "配置已保存到 config.yaml"}
+
+
+@router.get("/stats")
+def get_system_stats(db: Session = Depends(get_db)):
+    """获取系统统计信息。"""
+    from app.models.video import Video
+    from app.models.note import Note
+    total_videos = db.query(Video).count()
+    completed_videos = db.query(Video).filter(Video.status == "completed").count()
+    total_notes = db.query(Note).count()
+    chunks = db.query(Note).with_entities(Note.total_chunks).all()
+    total_chunk_count = sum((c[0] or 0) for c in chunks)
+    durations = db.query(Video).with_entities(Video.duration_seconds).all()
+    total_hours = sum((d[0] or 0) for d in durations) / 3600
+    try:
+        disk = shutil.disk_usage(settings.data_dir)
+        storage_usage = disk.total - disk.free
+        disk_free = disk.free
+    except Exception:
+        storage_usage = 0
+        disk_free = 0
+    return {
+        "total_videos": total_videos,
+        "completed_videos": completed_videos,
+        "total_notes": total_notes,
+        "total_chunks": total_chunk_count,
+        "total_duration_hours": round(total_hours, 1),
+        "storage_usage_bytes": storage_usage,
+        "disk_free_bytes": disk_free,
+    }
+
+
+@router.get("/ready")
+async def system_ready():
+    """轻量就绪检查，用于前端探测后端是否启动。"""
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "ready": True,
+            "version": "0.1.0"
+        }
     }
