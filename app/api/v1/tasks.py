@@ -1,5 +1,5 @@
 """任务管理 API：状态查询、日志、重试。"""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -10,7 +10,20 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 @router.get("/{task_id}")
-def get_task(task_id: str, db: Session = Depends(get_db)):
+def get_task(task_id: str, request: Request, db: Session = Depends(get_db)):
+    # 1. Check orchestrator in-memory tasks first (real-time status)
+    orch = getattr(request.app.state, "orchestrator", None)
+    if orch:
+        pipe_task = orch.get_task(task_id)
+        if pipe_task:
+            return {
+                "task_id": pipe_task.task_id,
+                "video_id": pipe_task.video_id,
+                "status": pipe_task.status.value,
+                "progress": pipe_task.progress,
+                "message": pipe_task.error or "",
+            }
+    # 2. Fallback to DB Task records
     task = db.query(TaskModel).filter(TaskModel.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -18,7 +31,13 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{task_id}/logs")
-def get_task_logs(task_id: str, level: str = Query(None), page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+def get_task_logs(
+    task_id: str,
+    level: str = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
     q = db.query(TaskLog).filter(TaskLog.task_id == task_id)
     if level:
         q = q.filter(TaskLog.level == level.upper())

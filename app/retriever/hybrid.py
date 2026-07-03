@@ -24,9 +24,12 @@ class HybridRetriever:
                 self.inverted_index[word].add(chunk_id)
             self.chunk_cache[chunk_id] = chunk
 
-    async def retrieve(self, query: str, top_k: int = 5, video_id: Optional[str] = None) -> List[Dict]:
-        """混合检索返回 top_k 个文档片段"""
-        # 1. 向量检索
+    async def retrieve(self, query: str, note_id: Optional[str] = None, top_k: int = 5) -> List[Dict]:
+        """混合检索返回 top_k 个文档片段。
+        note_id 参数兼容 PipelineOrchestrator 调用约定（映射为 video_id 过滤）。
+        """
+        video_id = note_id
+        # 1. 向量检索（由 ChromaDB 处理）
         filter = {"video_id": video_id} if video_id else None
         vector_results = await self.vector_store.similarity_search(query, top_k=top_k*2, filter=filter)
         # 2. 关键词检索

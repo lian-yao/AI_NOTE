@@ -135,27 +135,74 @@ class PipelineOrchestrator:
         qa: QAEngine | None = None,
         max_concurrency: int = 2,
     ):
-        self.transcriber = transcriber or MockTranscriber()
-        # 如果配置了 Bjian 凭证，自动使用必剪转写
-        if not transcriber:
-            from app.core.config import settings
-            if settings.bjian_app_id and settings.bjian_access_token:
-                self.transcriber = BjianTranscriber()
-            else:
-                self.transcriber = MockTranscriber()
-        else:
-            self.transcriber = transcriber
         self.processor = processor or MockProcessor()
-        self.video_processor = video_processor or MockProcessor()
-        self.vector_store = vector_store or MockStore()
-        self.llm = llm or MockLLM()
-        self.store = store or MockStore()
-        self.retriever = retriever or MockRetriever(self.store)
-        self.qa = qa or MockQA(self.llm)
+        # VideoProcessor: 优先用真实 B 模块（BilibiliVideoProcessor）
+        if video_processor:
+            self.video_processor = video_processor
+        else:
+            try:
+                from app.processor.video_processor import BilibiliVideoProcessor
+                from app.core.config import settings
+                self.video_processor = BilibiliVideoProcessor(data_dir=settings.data_dir)
+            except Exception:
+                self.video_processor = MockProcessor()
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._tasks: dict[str, PipelineTask] = {}
         self._progress_callbacks: list[ProgressCallback] = []
         self._lock = asyncio.Lock()
+
+        # ── LLM: 有 API key 则用真实客户端 ──
+        if llm:
+            self.llm = llm
+        else:
+            from app.core.config import settings
+            if settings.tongyi_api_key or settings.deepseek_api_key:
+                from app.llm.client import get_llm_client
+                try:
+                    self.llm = get_llm_client()
+                except Exception:
+                    self.llm = MockLLM()
+            else:
+                self.llm = MockLLM()
+
+        # ── Transcriber: 配置了必剪凭证则用必剪 ──
+        self.transcriber = MockTranscriber()
+        if not transcriber:
+            from app.core.config import settings
+            if settings.bjian_app_id and settings.bjian_access_token:
+                self.transcriber = BjianTranscriber()
+        elif transcriber:
+            self.transcriber = transcriber
+
+        # ── VectorStore: 优先用 ChromaDB（本地运行，无需 API） ──
+        if vector_store:
+            self.vector_store = vector_store
+        else:
+            try:
+                self.vector_store = VectorStore()
+            except Exception:
+                self.vector_store = MockStore()
+
+        # ── Store: 配合 VectorStore 使用 ──
+        self.store = store or MockStore()
+
+        # ── Retriever: 有真实 VectorStore 则用 HybridRetriever ──
+        if retriever:
+            self.retriever = retriever
+        elif not isinstance(self.vector_store, MockStore):
+            from app.retriever.hybrid import HybridRetriever
+            self.retriever = HybridRetriever(self.vector_store)
+        else:
+            self.retriever = MockRetriever(self.store)
+
+        # ── QAEngine: 有真实 Retriever 则用真实 QA ──
+        if qa:
+            self.qa = qa
+        elif not isinstance(self.retriever, MockRetriever):
+            from app.qa.engine import QAEngine
+            self.qa = QAEngine(self.retriever)
+        else:
+            self.qa = MockQA(self.llm)
 
     async def start_task(self, source_url: str, options: dict[str, Any] | None = None) -> PipelineTask:
         "提交一个视频处理任务，立即返回。"
@@ -218,12 +265,14 @@ class PipelineOrchestrator:
                     await self._run_stage(task, stage, db)
                 task.status = TaskStatus.COMPLETED
                 self._emit(PipelineEvent(event="completed", task_id=task.task_id, video_id=task.video_id or "", stage="", status="completed", progress=100, message="处理完成"))
+                db.commit()
             except TaskCancelledError:
                 pass
             except Exception as e:
                 task.status = TaskStatus.FAILED
                 task.error = str(e)
                 self._emit(PipelineEvent(event="error", task_id=task.task_id, video_id=task.video_id or "", stage=task.current_stage.value if task.current_stage else "", status="failed", progress=task.progress, message=str(e)))
+                db.rollback()
             finally:
                 db.close()
 
@@ -242,23 +291,29 @@ class PipelineOrchestrator:
             video_dir = parse_result.artifacts.get("video_dir", "")
             task.options["video_dir"] = video_dir
 
-            video = Video(
-                video_id=meta.get("video_id", ""),
-                url=task.source_url,
-                title=meta.get("title", task.source_url),
-                uploader=meta.get("uploader", ""),
-                uploader_uid=str(meta.get("uploader_uid", "")),
-                description=meta.get("description", ""),
-                duration_seconds=meta.get("duration_seconds"),
-                cover_url=meta.get("cover_url", ""),
-                bvid=meta.get("bvid"),
-                avid=meta.get("avid"),
-                status="pending",
-            )
-            db.add(video)
-            db.flush()
-            task.video_id = video.video_id
-            task.note_id = video.id
+            video_id = meta.get("video_id", "")
+            existing = db.query(Video).filter(Video.video_id == video_id).first()
+            if existing:
+                task.video_id = existing.video_id
+                task.note_id = existing.id
+            else:
+                video = Video(
+                    video_id=video_id,
+                    url=task.source_url,
+                    title=meta.get("title", task.source_url),
+                    uploader=meta.get("uploader", ""),
+                    uploader_uid=str(meta.get("uploader_uid", "")),
+                    description=meta.get("description", ""),
+                    duration_seconds=meta.get("duration_seconds"),
+                    cover_url=meta.get("cover_url", ""),
+                    bvid=meta.get("bvid"),
+                    avid=meta.get("avid"),
+                    status="pending",
+                )
+                db.add(video)
+                db.flush()
+                task.video_id = video.video_id
+                task.note_id = video.id
 
         elif stage == PipelineStage.DOWNLOAD:
             video_dir = task.options.get("video_dir", "")
@@ -340,6 +395,12 @@ class PipelineOrchestrator:
                 video = db.query(Video).filter(Video.video_id == task.video_id).first()
                 if video:
                     video.status = "generating"
+                    # 删除已有笔记（支持重新生成）
+                    old_note = db.query(Note).filter(Note.video_id == video.id).first()
+                    if old_note:
+                        db.query(Chunk).filter(Chunk.note_id == old_note.id).delete()
+                        db.delete(old_note)
+                        db.flush()
                     note = Note(
                         video_id=video.id,
                         file_path=str(note_file),

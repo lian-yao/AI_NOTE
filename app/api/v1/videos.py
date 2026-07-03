@@ -46,20 +46,32 @@ def get_orchestrator(request: Request):
 
 @router.post("/parse", response_model=ParseResponse)
 async def parse_video(body: VideoParseRequest):
-    """解析 B 站视频链接，返回元数据。"""
-    import time
+    """解析 B 站视频链接，返回元数据（BilibiliVideoProcessor 真实解析）。"""
+    from app.processor.video_processor import BilibiliVideoProcessor
+    from app.core.config import settings
+    proc = BilibiliVideoProcessor(data_dir=settings.data_dir)
+    result = await proc.parse(body.url)
+    if not result.success:
+        raise HTTPException(status_code=400, detail=result.error or "解析失败")
+    meta = result.metadata
     return ParseResponse(
-        video_id=f"b_BV{int(time.time())}",
-        title="视频标题（Mock）",
-        uploader="UP主（Mock）",
-        duration_seconds=1800,
+        video_id=meta.get("video_id", ""),
+        title=meta.get("title", ""),
+        uploader=meta.get("uploader"),
+        uploader_uid=meta.get("uploader_uid"),
+        duration_seconds=int(meta["duration_seconds"]) if meta.get("duration_seconds") else None,
+        cover_url=meta.get("cover_url"),
+        bvid=meta.get("bvid"),
+        avid=int(meta["avid"]) if meta.get("avid") else None,
+        description=meta.get("description"),
     )
 
 
 @router.post("/process")
 async def process_video(body: VideoProcessRequest, orchestrator=Depends(get_orchestrator)):
-    """提交视频处理。"""
-    return await orchestrator.process_video(body.url)
+    """提交视频处理，返回 task_id，前端轮询进度。"""
+    task = await orchestrator.start_task(body.url)
+    return {"task_id": task.task_id, "video_id": task.video_id, "status": task.status.value}
 
 
 @router.get("/")

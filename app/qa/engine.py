@@ -71,3 +71,10 @@ class QAEngine:
         yield "\n\n---\n**引用来源**：\n"
         for ref in references:
             yield f"- 《{ref['video_title']}》- {ref['section_title']} (时间: {ref['start_time']}s)\n"
+    async def answer(self, question: str, context: list) -> str:
+        """Non-streaming QA: collect stream output and return full answer."""
+        answer_parts = []
+        async for token in self.ask(question, mode="global"):
+            answer_parts.append(token)
+        return "".join(answer_parts)
+

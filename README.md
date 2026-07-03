@@ -8,6 +8,21 @@
 - 单视频精准问答
 - 跨视频知识库检索问答
 
+## 开始工作
+
+在阿里云百炼平台和DeepSeek开发平台获取api-key(ds一般要充值才能正常使用)
+
+执行:
+
+copy .env.example .env
+
+再打开env文件，设置：
+
+VN_TONGYI_API_KEY=sk-你的通义 api-key
+
+VN_DEEPSEEK_API_KEY=sk-你的DeepSeek api-key
+
+
 ## 快速开始
 
 本项目使用 **uv** 管理依赖，Python 版本锁定在 **3.13.3**（见 `.python-version`）。

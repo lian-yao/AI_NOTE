@@ -6,6 +6,7 @@ from typing import AsyncGenerator, Optional
 from abc import ABC, abstractmethod
 from loguru import logger
 from app.core.config import settings
+from app.store.embedder import EmbeddingClient
 
 
 class LLMClient(ABC):
@@ -99,6 +100,11 @@ class TongyiClient(LLMClient):
                             logger.warning(f"通义流式 JSON 解析失败: {data_str}, 错误: {e}")
                             continue
 
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """文本向量化，委托给 EmbeddingClient。"""
+        emb = EmbeddingClient(api_key=self.api_key)
+        return await emb.embed(texts)
+
 
 class DeepSeekClient(LLMClient):
     """DeepSeek 客户端（OpenAI 兼容接口）"""
@@ -147,6 +153,12 @@ class DeepSeekClient(LLMClient):
                         except json.JSONDecodeError as e:
                             logger.warning(f"DeepSeek 流式 JSON 解析失败: {data_str}, 错误: {e}")
                             continue
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """文本向量化，委托给 EmbeddingClient（使用通义千问 embedding API）。"""
+        from app.core.config import settings
+        emb = EmbeddingClient(api_key=settings.tongyi_api_key)
+        return await emb.embed(texts)
 
 
 def get_llm_client() -> LLMClient:

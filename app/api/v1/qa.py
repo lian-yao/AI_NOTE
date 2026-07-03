@@ -33,3 +33,15 @@ async def ask_global_question(body: GlobalQARequest, orchestrator=Depends(get_or
         top_k=body.top_k,
     )
     return await orchestrator.answer_question(qa_req)
+
+@router.get("/index/status")
+def get_index_status():
+    """Check QA vector index status."""
+    from app.store.vector import VectorStore
+    try:
+        vs = VectorStore()
+        count = vs.collection.count()
+        return {"status": "ready" if count > 0 else "empty", "chunks": count}
+    except Exception as e:
+        return {"status": "error", "chunks": 0, "error": str(e)[:100]}
+
