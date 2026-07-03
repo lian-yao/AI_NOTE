@@ -77,7 +77,6 @@ async def parse_bilibili_url(
     import yt_dlp
     import os
 
-    from app.core.config import settings
     from app.core.paths import project_root
 
     opts: dict = {
@@ -87,15 +86,35 @@ async def parse_bilibili_url(
         "skip_download": True,
     }
 
-    # Cookie：优先用显式传入的，否则用全局配置的 cookies.txt
-    _cookie = cookie or settings.bilibili_cookie_file
-    if _cookie:
-        cookie_path = os.path.join(project_root(), _cookie) if not os.path.isabs(_cookie) else _cookie
+    # Cookie：优先用显式传入的，否则用全局配置（浏览器提取 or 文件 or 字符串）
+    if cookie:
+        cookie_path = os.path.join(project_root(), cookie) if not os.path.isabs(cookie) else cookie
         if os.path.isfile(cookie_path):
             opts["cookiefile"] = cookie_path
+    else:
+        from app.processor import build_cookie_opts
+        opts.update(build_cookie_opts())
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    # 提取内部标记（yt-dlp 不认识这些 key）
+    browser_cache_path = opts.pop("_browser_cache", None)
+    _temp_cookie = opts.pop("_temp_cookie", False)
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+            # 首次从浏览器提取成功 → 自动缓存到文件，后续直接复用
+            if browser_cache_path and ydl.cookiejar:
+                from app.processor import save_browser_cookies_to_cache
+                try:
+                    save_browser_cookies_to_cache(browser_cache_path, ydl.cookiejar)
+                except Exception:
+                    pass
+    finally:
+        # string 模式：删除临时 cookie 文件
+        if _temp_cookie:
+            from app.processor import cleanup_temp_cookie
+            cleanup_temp_cookie({"cookiefile": opts.get("cookiefile"), "_temp_cookie": True})
 
     if info is None:
         return StageResult(
