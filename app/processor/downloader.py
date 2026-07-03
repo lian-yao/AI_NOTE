@@ -73,10 +73,6 @@ async def download_video(
 
     async def _do_download() -> str:
         import yt_dlp
-        import os
-
-        from app.core.config import settings
-        from app.core.paths import project_root
 
         opts = {
             "format": fmt,
@@ -88,21 +84,33 @@ async def download_video(
             "retries": 3,
         }
 
-        # Cookie：用全局配置的 cookies.txt
-        _cookie = settings.bilibili_cookie_file
-        if _cookie:
-            cookie_path = os.path.join(project_root(), _cookie) if not os.path.isabs(_cookie) else _cookie
-            if os.path.isfile(cookie_path):
-                opts["cookiefile"] = cookie_path
+        # Cookie：用全局配置（浏览器提取 or 文件 or 字符串）
+        from app.processor import build_cookie_opts, save_browser_cookies_to_cache, cleanup_temp_cookie
+        opts.update(build_cookie_opts())
+
+        # 提取内部标记（yt-dlp 不认识这些 key）
+        browser_cache_path = opts.pop("_browser_cache", None)
+        _temp_cookie = opts.pop("_temp_cookie", False)
 
         loop = __import__("asyncio").get_running_loop()
         # yt-dlp 是同步库，在线程池中运行
         def _sync_download():
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
+                # 首次从浏览器提取成功 → 自动缓存
+                if browser_cache_path and ydl.cookiejar:
+                    try:
+                        save_browser_cookies_to_cache(browser_cache_path, ydl.cookiejar)
+                    except Exception:
+                        pass
                 return ydl.prepare_filename(info)
 
-        return await loop.run_in_executor(None, _sync_download)
+        try:
+            return await loop.run_in_executor(None, _sync_download)
+        finally:
+            # string 模式：删除临时 cookie 文件
+            if _temp_cookie:
+                cleanup_temp_cookie({"cookiefile": opts.get("cookiefile"), "_temp_cookie": True})
 
     # =========================================================================
     # 备用降级逻辑（画质不可用时启用）：
