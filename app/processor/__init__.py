@@ -15,7 +15,7 @@ from app.schemas.chunk import ChunkBase
 from app.schemas.stage import StageResult
 from app.schemas.transcript import TranscriptResult
 
-from app.processor.video_processor import VideoProcessorImpl
+from app.processor.video_processor import BilibiliVideoProcessor
 
 
 def _cookie_string_to_netscape(cookie_str: str, domain: str = ".bilibili.com") -> str:
