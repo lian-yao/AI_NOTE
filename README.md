@@ -23,6 +23,30 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
+## 环境准备
+
+首次 clone 项目后，需要额外安装两个运行时依赖：
+
+**1. 安装 ffmpeg**（音频提取，选一个即可）
+
+```bash
+winget install ffmpeg              # Windows
+brew install ffmpeg                # macOS
+sudo apt install ffmpeg            # Linux
+```
+
+**2. 配置环境变量**
+
+```bash
+cp .env.example .env              # 复制模板，按需修改 API Key 等
+```
+
+**3. 预下载 Whisper 模型**（避免首次转写时等待）
+
+```bash
+uv run python scripts/setup_models.py   # 读取 .env 里的 WHISPER_MODEL_SIZE
+```
+
 ## 前端启动
 
 前端项目在 `frontend/` 目录下，使用 **npm** 安装依赖并启动：

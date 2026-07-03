@@ -24,14 +24,15 @@ class FasterWhisperTranscriber:
         self,
         model_size: str = "tiny",
         device: str = "auto",
-        compute_type: str = "float16",
+        compute_type: str = "auto",
     ):
         """初始化转写器。
 
         Args:
             model_size: 模型大小
             device: 计算设备（auto 表示有 GPU 则用 GPU）
-            compute_type: 计算精度（float16 / int8_float16 / int8）
+            compute_type: 计算精度（auto / float16 / int8_float16 / int8）。
+                          auto 时根据设备自动选择：CUDA→float16，CPU→int8
         """
         valid_sizes = {"tiny", "base", "small", "medium", "large-v3"}
         if model_size not in valid_sizes:
@@ -43,21 +44,57 @@ class FasterWhisperTranscriber:
         self.compute_type = compute_type
         self._model = None
 
+    def _resolve_compute_type(self, device: str, compute_type: str) -> str:
+        """根据设备自动选择合适的计算精度。"""
+        if compute_type != "auto":
+            return compute_type
+        # auto 模式：检测是否有 CUDA
+        if device == "auto":
+            try:
+                import ctranslate2
+                if ctranslate2.get_cuda_device_count() > 0:
+                    return "float16"
+            except Exception:
+                pass
+            return "int8"
+        if device == "cuda":
+            return "float16"
+        # cpu → int8（float16 在 CPU 上不支持）
+        return "int8"
+
     def _ensure_model(self):
         """延迟加载模型（首次使用时加载）。"""
         if self._model is not None:
             return
         try:
             from faster_whisper import WhisperModel
-            self._model = WhisperModel(
-                self.model_size,
-                device=self.device,
-                compute_type=self.compute_type,
-            )
         except ImportError:
             raise RuntimeError(
                 "faster-whisper 未安装。请运行: pip install faster-whisper"
             )
+
+        ct = self._resolve_compute_type(self.device, self.compute_type)
+
+        # 尝试加载，CUDA 库缺失时自动降级为 CPU
+        devices_to_try = [self.device] if self.device != "auto" else ["cuda", "cpu"]
+        last_error = None
+
+        for dev in devices_to_try:
+            try:
+                dev_ct = self._resolve_compute_type(dev, self.compute_type)
+                self._model = WhisperModel(
+                    self.model_size,
+                    device=dev,
+                    compute_type=dev_ct,
+                )
+                return
+            except (RuntimeError, ValueError) as e:
+                last_error = str(e)
+                if "cublas" in last_error.lower() or "cuda" in last_error.lower() or "float16" in last_error.lower():
+                    continue  # 降级尝试下一个 device
+                raise  # 其他错误直接抛出
+
+        raise RuntimeError(f"无法加载 Whisper 模型: {last_error}")
 
     async def transcribe(
         self,
@@ -91,7 +128,7 @@ class FasterWhisperTranscriber:
 
         import asyncio
 
-        loop = asyncio.get_running_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _sync_transcribe():
             segments_raw, info = self._model.transcribe(
