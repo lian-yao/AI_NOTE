@@ -1,72 +1,81 @@
-"""Enabled models management API."""
-from __future__ import annotations
-import json, os, time
-from fastapi import APIRouter, HTTPException, Query
+"""
+已启用模型管理（模拟）
+默认启用通义和 DeepSeek 模型（从 settings 读取模型名）
+"""
+from typing import List, Optional
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from app.core.config import settings
+from app.schemas.response import ApiResponse
 
 router = APIRouter(prefix="/models", tags=["models"])
-DATA_FILE = "data/enabled_models.json"
 
-DEFAULT_MODELS = [
-    {"id": 1, "provider_id": "tongyi", "model_name": "qwen-plus", "enabled": True, "created_at": "2026-07-01T00:00:00"},
-    {"id": 2, "provider_id": "tongyi", "model_name": "qwen-turbo", "enabled": False, "created_at": "2026-07-01T00:00:00"},
-    {"id": 3, "provider_id": "deepseek", "model_name": "deepseek-chat", "enabled": True, "created_at": "2026-07-01T00:00:00"},
-    {"id": 4, "provider_id": "deepseek", "model_name": "deepseek-reasoner", "enabled": False, "created_at": "2026-07-01T00:00:00"},
-]
+# 内存存储
+_models: List[dict] = []
+_id_counter = 1
 
+# 初始化默认启用模型（从 settings 读取默认模型）
+_default_models = []
+if settings.tongyi_api_key:
+    _default_models.append({
+        "id": 1,
+        "provider_id": "tongyi",
+        "model_name": settings.tongyi_model,
+        "enabled": True,
+        "created_at": "2026-07-03T00:00:00"
+    })
+if settings.deepseek_api_key:
+    _default_models.append({
+        "id": 2,
+        "provider_id": "deepseek",
+        "model_name": settings.deepseek_model,
+        "enabled": True,
+        "created_at": "2026-07-03T00:00:00"
+    })
+_models = _default_models
+_id_counter = len(_models) + 1
 
-def _load():
-    if not os.path.isfile(DATA_FILE):
-        return list(DEFAULT_MODELS)
-    try:
-        with open(DATA_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return list(DEFAULT_MODELS)
-
-
-def _save(data):
-    os.makedirs(os.path.dirname(DATA_FILE) or ".", exist_ok=True)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-class AddModelPayload(BaseModel):
+class CreateModelRequest(BaseModel):
     provider_id: str
     model_name: str
 
-
 @router.get("")
-def list_models(provider_id: str | None = Query(None), enabled: bool | None = Query(None)):
-    items = _load()
-    if provider_id:
-        items = [m for m in items if m["provider_id"] == provider_id]
-    if enabled is not None:
-        items = [m for m in items if m.get("enabled", False) == enabled]
-    return {"items": items, "total": len(items)}
-
+async def list_models(provider_id: Optional[str] = None, enabled: bool = True):
+    """获取已启用模型列表"""
+    items = []
+    for m in _models:
+        if provider_id and m["provider_id"] != provider_id:
+            continue
+        if m["enabled"] != enabled:
+            continue
+        items.append(m)
+    return ApiResponse(data={"items": items})
 
 @router.post("")
-def add_model(body: AddModelPayload):
-    items = _load()
-    mid = max((m["id"] for m in items), default=0) + 1
-    items.append({
-        "id": mid,
-        "provider_id": body.provider_id,
-        "model_name": body.model_name,
+async def enable_model(req: CreateModelRequest):
+    """启用一个模型"""
+    # 检查是否已存在
+    for m in _models:
+        if m["provider_id"] == req.provider_id and m["model_name"] == req.model_name:
+            m["enabled"] = True
+            return ApiResponse(data=m)
+    # 新增
+    new_model = {
+        "id": _id_counter,
+        "provider_id": req.provider_id,
+        "model_name": req.model_name,
         "enabled": True,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    })
-    _save(items)
-    return {"id": mid, "message": "Model added"}
+        "created_at": "2026-07-03T12:00:00"
+    }
+    _models.append(new_model)
+    _id_counter += 1
+    return ApiResponse(data=new_model)
 
-
-@router.delete("/{model_id}")
-def delete_model(model_id: int):
-    items = _load()
-    for i, m in enumerate(items):
+@router.delete("/{model_id:int}")
+async def delete_model(model_id: int):
+    """禁用或删除模型（这里直接删除）"""
+    for idx, m in enumerate(_models):
         if m["id"] == model_id:
-            items.pop(i)
-            _save(items)
-            return {"message": "Model deleted"}
+            del _models[idx]
+            return ApiResponse(data={"deleted": True})
     raise HTTPException(404, "Model not found")

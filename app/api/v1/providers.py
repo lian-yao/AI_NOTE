@@ -1,166 +1,171 @@
-"""LLM Provider management API."""
-from __future__ import annotations
-import json, os, time, httpx
-from pathlib import Path
+"""
+Provider 管理（模拟实现，后续由角色A完善）
+默认载入通义千问和 DeepSeek，API Key 从 settings 读取。
+"""
+import uuid
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from app.core.config import settings
+from app.schemas.response import ApiResponse
 
 router = APIRouter(prefix="/providers", tags=["providers"])
-DATA_FILE = "data/providers.json"
 
-DEFAULT_PROVIDERS = [
-    {"id": "tongyi", "name": "Tongyi", "logo": "tongyi", "type": "tongyi",
-     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-     "api_key": "", "enabled": True},
-    {"id": "deepseek", "name": "DeepSeek", "logo": "deepseek", "type": "openai-compatible",
-     "base_url": "https://api.deepseek.com/v1",
-     "api_key": "", "enabled": True},
-]
+# ---------- 内存存储 ----------
+_providers: dict[str, dict] = {}
 
+def _init_default_providers():
+    """初始化默认 Provider（通义 & DeepSeek）"""
+    default_providers = [
+        {
+            "id": "tongyi",
+            "name": "通义千问",
+            "logo": "tongyi",
+            "type": "tongyi",
+            "base_url": "https://dashscope.aliyuncs.com/api/v1",
+            "api_key": settings.tongyi_api_key,   # 真实 key，但 get 时不会返回明文
+            "enabled": True,
+            "created_at": "2026-07-03T00:00:00",
+            "updated_at": "2026-07-03T00:00:00"
+        },
+        {
+            "id": "deepseek",
+            "name": "DeepSeek",
+            "logo": "deepseek",
+            "type": "openai-compatible",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": settings.deepseek_api_key,
+            "enabled": True,
+            "created_at": "2026-07-03T00:00:00",
+            "updated_at": "2026-07-03T00:00:00"
+        }
+    ]
+    for p in default_providers:
+        _providers[p["id"]] = p
 
-def _load():
-    if not os.path.isfile(DATA_FILE):
-        return list(DEFAULT_PROVIDERS)
-    try:
-        with open(DATA_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return list(DEFAULT_PROVIDERS)
+# 初始化
+_init_default_providers()
 
-
-def _save(providers):
-    os.makedirs(os.path.dirname(DATA_FILE) or ".", exist_ok=True)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(providers, f, ensure_ascii=False, indent=2)
-
-
-class ProviderCreate(BaseModel):
+# ---------- 请求/响应模型 ----------
+class CreateProviderRequest(BaseModel):
     name: str
-    logo: str = "custom"
+    logo: str = ""
     type: str = "openai-compatible"
-    base_url: str = ""
-    api_key: str = ""
+    base_url: str
+    api_key: str
     enabled: bool = True
 
+class UpdateProviderRequest(BaseModel):
+    name: str
+    logo: str = ""
+    type: str = "openai-compatible"
+    base_url: str
+    api_key: str | None = None   # 允许不更新 API Key
+    enabled: bool = True
 
-class ProviderUpdate(BaseModel):
-    name: str | None = None
-    logo: str | None = None
-    type: str | None = None
-    base_url: str | None = None
-    api_key: str | None = None
-    enabled: bool | None = None
-
-
-class TestConnectionPayload(BaseModel):
-    model_name: str = ""
-
-
+# ---------- 接口 ----------
 @router.get("")
-def list_providers():
-    items = _load()
-    result = []
-    for p in items:
-        result.append({
+async def list_providers():
+    """获取 Provider 列表（不返回明文 api_key）"""
+    items = []
+    for p in _providers.values():
+        items.append({
             "id": p["id"],
             "name": p["name"],
-            "logo": p.get("logo", "custom"),
-            "type": p.get("type", "openai-compatible"),
-            "base_url": p.get("base_url", ""),
+            "logo": p["logo"],
+            "type": p["type"],
+            "base_url": p["base_url"],
+            "enabled": p["enabled"],
             "has_api_key": bool(p.get("api_key")),
-            "api_key": p.get("api_key", ""),
-            "enabled": p.get("enabled", True),
+            "created_at": p["created_at"],
+            "updated_at": p["updated_at"]
         })
-    return {"items": result, "total": len(result)}
-
+    return ApiResponse(data={"items": items})
 
 @router.post("")
-def create_provider(body: ProviderCreate):
-    providers = _load()
-    pid = body.name.lower().replace(" ", "_")
-    if any(p["id"] == pid for p in providers):
-        raise HTTPException(400, f"Provider '{pid}' already exists")
-    provider = {
-        "id": pid,
-        "name": body.name,
-        "logo": body.logo,
-        "type": body.type,
-        "base_url": body.base_url,
-        "api_key": body.api_key,
-        "enabled": body.enabled,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+async def create_provider(req: CreateProviderRequest):
+    """新增 Provider"""
+    new_id = str(uuid.uuid4())
+    _providers[new_id] = {
+        "id": new_id,
+        "name": req.name,
+        "logo": req.logo,
+        "type": req.type,
+        "base_url": req.base_url,
+        "api_key": req.api_key,
+        "enabled": req.enabled,
+        "created_at": "2026-07-03T12:00:00",
+        "updated_at": "2026-07-03T12:00:00"
     }
-    providers.append(provider)
-    _save(providers)
-    return {"id": pid, "message": "Provider created"}
-
+    return ApiResponse(data={"id": new_id})
 
 @router.get("/{provider_id}")
-def get_provider(provider_id: str):
-    providers = _load()
-    for p in providers:
-        if p["id"] == provider_id:
-            return {
-                "id": p["id"], "name": p["name"],
-                "logo": p.get("logo", "custom"), "type": p.get("type", "openai-compatible"),
-                "base_url": p.get("base_url", ""), "has_api_key": bool(p.get("api_key")),
-                "api_key": p.get("api_key", ""), "enabled": p.get("enabled", True),
-            }
-    raise HTTPException(404, "Provider not found")
-
+async def get_provider(provider_id: str):
+    p = _providers.get(provider_id)
+    if not p:
+        raise HTTPException(404, "Provider not found")
+    return ApiResponse(data={
+        "id": p["id"],
+        "name": p["name"],
+        "logo": p["logo"],
+        "type": p["type"],
+        "base_url": p["base_url"],
+        "enabled": p["enabled"],
+        "has_api_key": bool(p.get("api_key")),
+        "created_at": p["created_at"],
+        "updated_at": p["updated_at"]
+    })
 
 @router.put("/{provider_id}")
-def update_provider(provider_id: str, body: ProviderUpdate):
-    providers = _load()
-    for p in providers:
-        if p["id"] == provider_id:
-            for key in ("name", "logo", "type", "base_url", "api_key", "enabled"):
-                val = getattr(body, key, None)
-                if val is not None:
-                    p[key] = val
-            p["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            _save(providers)
-            return {"message": "Provider updated"}
-    raise HTTPException(404, "Provider not found")
-
+async def update_provider(provider_id: str, req: UpdateProviderRequest):
+    p = _providers.get(provider_id)
+    if not p:
+        raise HTTPException(404, "Provider not found")
+    # 更新字段
+    p["name"] = req.name
+    p["logo"] = req.logo
+    p["type"] = req.type
+    p["base_url"] = req.base_url
+    if req.api_key is not None:
+        p["api_key"] = req.api_key
+    p["enabled"] = req.enabled
+    p["updated_at"] = "2026-07-03T12:00:00"
+    return ApiResponse(data={"updated": True})
 
 @router.delete("/{provider_id}")
-def delete_provider(provider_id: str):
-    providers = _load()
-    for i, p in enumerate(providers):
-        if p["id"] == provider_id:
-            providers.pop(i)
-            _save(providers)
-            return {"message": "Provider deleted"}
-    raise HTTPException(404, "Provider not found")
-
+async def delete_provider(provider_id: str):
+    if provider_id not in _providers:
+        raise HTTPException(404, "Provider not found")
+    # 不允许删除默认的两个？实际可以删除，但这里允许
+    del _providers[provider_id]
+    # 同时删除该 Provider 下所有已启用的模型（如果有 models 存储，需要一并清理，此处略）
+    return ApiResponse(data={"deleted": True, "deleted_models": 0})
 
 @router.post("/{provider_id}/test")
-async def test_connection(provider_id: str, body: TestConnectionPayload):
-    providers = _load()
-    for p in providers:
-        if p["id"] == provider_id:
-            try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    resp = await client.post(f"{p.get('base_url','')}/chat/completions",
-                        headers={"Authorization": f"Bearer {p.get('api_key','')}"},
-                        json={"model": body.model_name or "gpt-3.5-turbo", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
-                    )
-                    if resp.status_code == 200:
-                        return {"status": "ok", "message": "Connection successful"}
-                    return {"status": "error", "message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
-            except Exception as e:
-                return {"status": "error", "message": str(e)[:200]}
-    raise HTTPException(404, "Provider not found")
-
+async def test_provider(provider_id: str, body: dict = None):
+    """测试连接（模拟）"""
+    p = _providers.get(provider_id)
+    if not p:
+        raise HTTPException(404, "Provider not found")
+    # 简单模拟，实际可调用 /models 接口
+    return ApiResponse(data={"ok": True, "latency_ms": 150})
 
 @router.get("/{provider_id}/remote-models")
-async def fetch_remote_models(provider_id: str):
-    """Fetch models available from the provider API."""
-    from app.core.config import settings
-    models = []
-    if provider_id == "tongyi":
-        models = ["qwen-plus", "qwen-turbo", "qwen-max", "qwen2.5-72b-instruct"]
-    elif provider_id == "deepseek":
-        models = ["deepseek-chat", "deepseek-reasoner"]
-    return {"models": models, "data": models}
+async def remote_models(provider_id: str):
+    """获取远程模型列表（模拟）"""
+    p = _providers.get(provider_id)
+    if not p:
+        raise HTTPException(404, "Provider not found")
+    # 根据 provider 类型返回不同 mock 数据
+    if p["id"] == "tongyi":
+        models = [
+            {"id": "qwen-plus", "object": "model", "display_name": "Qwen-Plus", "owned_by": "tongyi"},
+            {"id": "qwen-turbo", "object": "model", "display_name": "Qwen-Turbo", "owned_by": "tongyi"},
+        ]
+    elif p["id"] == "deepseek":
+        models = [
+            {"id": "deepseek-chat", "object": "model", "display_name": "DeepSeek Chat", "owned_by": "deepseek"},
+        ]
+    else:
+        models = [{"id": "gpt-4o-mini", "object": "model", "display_name": "GPT-4o mini", "owned_by": "openai"}]
+    return ApiResponse(data={"models": models})

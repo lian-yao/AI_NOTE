@@ -1,5 +1,5 @@
 ﻿"""
-API v1 路由注册
+API v1 路由。
 """
 from fastapi import APIRouter
 from app.api.v1.notes import router as notes_router
@@ -17,6 +17,8 @@ from app.api.v1.platforms import router as platforms_router
 from app.api.v1.models import router as models_router
 
 from app.api.v1.platforms import router as platforms_router
+from app.api.v1.providers import router as providers_router
+from app.api.v1.models import router as models_router
 
 router = APIRouter(prefix="/v1")
 router.include_router(notes_router)
@@ -34,3 +36,5 @@ router.include_router(platforms_router)
 router.include_router(models_router)
 
 router.include_router(platforms_router)
+router.include_router(providers_router)
+router.include_router(models_router)

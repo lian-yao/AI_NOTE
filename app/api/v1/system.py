@@ -3,17 +3,19 @@ System health API.
 """
 import time
 import shutil
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
-from pydantic import BaseModel
 
 router = APIRouter(prefix="/system", tags=["system"])
+
 
 def _check_db(db: Session) -> str:
     try:
@@ -21,6 +23,7 @@ def _check_db(db: Session) -> str:
         return "ok"
     except Exception:
         return "error"
+
 
 def _check_disk(data_dir: str) -> str:
     try:
@@ -61,6 +64,7 @@ async def system_health(request: Request, db: Session = Depends(get_db)):
             "uptime_seconds": uptime,
         },
     }
+
 
 @router.get("/config")
 def get_system_config():
@@ -145,36 +149,91 @@ def get_system_stats(db: Session = Depends(get_db)):
         "disk_free_bytes": disk_free,
     }
 
+
 @router.get("/ready")
-def system_ready():
-    """Quick readiness check for frontend."""
-    return {"status": "ok", "ready": True}
+async def system_ready():
+    """轻量就绪检查，用于前端探测后端是否启动。"""
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "ready": True,
+            "version": "0.1.0"
+        }
+    }
 
 
 @router.get("/deploy-status")
-def get_deploy_status():
-    """Check deployment status: ffmpeg, CUDA, etc."""
-    import shutil
-    ffmpeg_available = shutil.which("ffmpeg") is not None
+async def deploy_status():
+    """获取部署状态（后端、FFmpeg、CUDA、Whisper 等）。"""
+    # 检测 FFmpeg
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_available = ffmpeg_path is not None
+
+    # 如果 shutil.which 没找到，尝试用 subprocess 再试一次
+    if not ffmpeg_available:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            ffmpeg_available = result.returncode == 0
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+
+    # 检测 CUDA
     cuda_available = False
+    cuda_version = None
+    gpu_name = None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            cuda_available = True
+            gpu_name = result.stdout.strip()
+            cuda_version = "检测到 NVIDIA GPU"
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    # 检测 PyTorch CUDA
     torch_installed = False
+    torch_cuda_available = False
     try:
         import torch
         torch_installed = True
-        cuda_available = torch.cuda.is_available()
+        torch_cuda_available = torch.cuda.is_available()
+        if torch_cuda_available:
+            cuda_version = f"CUDA {torch.version.cuda}"
     except ImportError:
         pass
-    gpu_name = None
-    if cuda_available:
-        try:
-            import torch
-            gpu_name = torch.cuda.get_device_name(0)
-        except Exception:
-            pass
+
     return {
-        "backend": {"status": "healthy", "port": 8000},
-        "cuda": {"available": cuda_available, "torch_installed": torch_installed,
-                 "version": None, "gpu_name": gpu_name},
-        "whisper": {"model_size": "tiny", "transcriber_type": "fast-whisper", "downloaded": False},
-        "ffmpeg": {"available": ffmpeg_available},
+        "code": 0,
+        "message": "success",
+        "data": {
+            "backend": {
+                "status": "ok",
+                "port": 8000
+            },
+            "ffmpeg": {
+                "available": ffmpeg_available
+            },
+            "cuda": {
+                "available": cuda_available or torch_cuda_available,
+                "torch_installed": torch_installed,
+                "version": cuda_version,
+                "gpu_name": gpu_name
+            },
+            "whisper": {
+                "model_size": "base",
+                "transcriber_type": "fast-whisper",
+                "downloaded": False
+            }
+        }
     }
