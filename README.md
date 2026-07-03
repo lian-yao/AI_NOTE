@@ -13,10 +13,13 @@
 在阿里云百炼平台和DeepSeek开发平台获取api-key(ds一般要充值才能正常使用)
 
 执行:
+
 copy .env.example .env
 
 再打开env文件，设置：
-VN_TONGYI_API_KEY=sk-你的通义api-key
+
+VN_TONGYI_API_KEY=sk-你的通义 api-key
+
 VN_DEEPSEEK_API_KEY=sk-你的DeepSeek api-key
 
 
