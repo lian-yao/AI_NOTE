@@ -22,9 +22,28 @@ export interface VideoItem {
   file_size?: number | null
   audio_path?: string | null
   video_path?: string | null
+  source_url?: string | null
+  player_url?: string | null
+  embed_url?: string | null
+  upload_date?: string | null
+  view_count?: number | null
+  like_count?: number | null
+  comment_count?: number | null
+  tags?: string[]
+  chapters?: Array<{
+    title?: string
+    start_time?: number
+    end_time?: number
+  }>
   processed_at?: string | null
   created_at: string
   updated_at: string
+  tasks?: Array<{
+    task_id: string
+    type?: string
+    status?: string
+    progress?: number
+  }>
 }
 
 export interface VideoListResponse {
@@ -46,6 +65,19 @@ export interface ParseVideoResponse {
   description?: string | null
   is_playlist?: boolean
   playlist_title?: string | null
+  source_url?: string | null
+  player_url?: string | null
+  embed_url?: string | null
+  upload_date?: string | null
+  view_count?: number | null
+  like_count?: number | null
+  comment_count?: number | null
+  tags?: string[]
+  chapters?: Array<{
+    title?: string
+    start_time?: number
+    end_time?: number
+  }>
 }
 
 export const listVideos = async (

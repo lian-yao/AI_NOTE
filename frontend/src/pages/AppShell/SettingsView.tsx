@@ -64,7 +64,7 @@ const SETTINGS_SECTIONS: {
   { id: 'provider', label: '模型接入', detail: 'Provider / API Key / Models', icon: Key },
   { id: 'platform', label: '平台数据', detail: 'Bilibili Cookie / Proxy', icon: Database },
   { id: 'transcriber', label: '本地转写', detail: 'Whisper / Transcriber', icon: HardDrive },
-  { id: 'storage', label: '存储管理', detail: 'Knowledge Base / Cache', icon: HardDrive },
+  { id: 'storage', label: '存储管理', detail: 'Data / Cache', icon: HardDrive },
   { id: 'monitor', label: '运行状态', detail: 'Backend / FFmpeg / CUDA', icon: Activity },
 ]
 
@@ -233,9 +233,11 @@ function buildCacheDirectories(rootPath: string): Record<CacheDirectoryKey, stri
   )
 }
 
-function normalizeStoragePathConfig(config: StoragePathConfig): StoragePathConfig {
+function normalizeStoragePathConfig(
+  config: Partial<StoragePathConfig> & { knowledgeBasePath?: string },
+): StoragePathConfig {
   const fallback = {
-    knowledgeBasePath: './data/knowledge',
+    dataRootPath: './data',
     cacheRootPath: './data/cache',
     cacheDirectories: buildCacheDirectories('./data/cache'),
     lastCacheClearedAt: null,
@@ -245,7 +247,7 @@ function normalizeStoragePathConfig(config: StoragePathConfig): StoragePathConfi
   return {
     ...fallback,
     ...config,
-    knowledgeBasePath: (config.knowledgeBasePath || fallback.knowledgeBasePath).trim(),
+    dataRootPath: (config.dataRootPath || config.knowledgeBasePath || fallback.dataRootPath).trim(),
     cacheRootPath: (config.cacheRootPath || fallback.cacheRootPath).trim(),
     cacheDirectories: CACHE_DIRECTORY_META.reduce(
       (directories, item) => ({
@@ -415,8 +417,8 @@ function ProviderSection() {
 
     setExpanded(current => {
       const next: Record<string, boolean> = {}
-      configuredProviders.forEach((provider, index) => {
-        next[provider.id] = current[provider.id] ?? index === 0
+      configuredProviders.forEach(provider => {
+        next[provider.id] = current[provider.id] ?? false
       })
       return next
     })
@@ -1264,7 +1266,7 @@ function StorageSection() {
   const selectedBytes = selectedStats.reduce((total, item) => total + item.bytes, 0)
   const normalizedDraft = normalizeStoragePathConfig(draft)
 
-  const updateDraftPath = (field: 'knowledgeBasePath' | 'cacheRootPath', value: string) => {
+  const updateDraftPath = (field: 'dataRootPath' | 'cacheRootPath', value: string) => {
     setDraft(prev => ({ ...prev, [field]: value }))
   }
 
@@ -1310,7 +1312,7 @@ function StorageSection() {
 
   const saveStorageConfig = () => {
     const requiredPaths = [
-      normalizedDraft.knowledgeBasePath,
+      normalizedDraft.dataRootPath,
       normalizedDraft.cacheRootPath,
       ...Object.values(normalizedDraft.cacheDirectories),
     ]
@@ -1355,9 +1357,9 @@ function StorageSection() {
       <div className="rounded-xl border border-neutral-800 bg-[#141414] p-6">
         <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
           <div>
-            <div className="font-medium text-neutral-200">知识库与缓存路径</div>
+            <div className="font-medium text-neutral-200">数据与缓存路径</div>
             <div className="mt-1 text-xs text-neutral-500">
-              前端先保存路径偏好，后续文件读写可直接接入同一份配置。
+              当前客户端的本地路径偏好。
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -1382,14 +1384,14 @@ function StorageSection() {
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
-            <label className="mb-2 block text-xs font-medium text-neutral-400">知识库路径</label>
+            <label className="mb-2 block text-xs font-medium text-neutral-400">数据根目录</label>
             <PathPickerInput
-              value={draft.knowledgeBasePath}
-              placeholder="./data/knowledge"
-              onChange={value => updateDraftPath('knowledgeBasePath', value)}
+              value={draft.dataRootPath}
+              placeholder="./data"
+              onChange={value => updateDraftPath('dataRootPath', value)}
               onPick={() =>
-                pickDirectory(draft.knowledgeBasePath, value =>
-                  updateDraftPath('knowledgeBasePath', value),
+                pickDirectory(draft.dataRootPath, value =>
+                  updateDraftPath('dataRootPath', value),
                 )
               }
             />

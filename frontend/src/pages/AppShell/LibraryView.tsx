@@ -10,8 +10,9 @@ import {
   Trash2,
 } from 'lucide-react'
 import type { Task } from '@/store/taskStore'
-import { useTaskStore } from '@/store/taskStore'
-import { getNoteRaw, listVideos, type VideoItem } from '@/services/video'
+import { isMockBackend, isMockLikeTask, useTaskStore } from '@/store/taskStore'
+import { get_task_status, type TaskStatusResponse } from '@/services/note'
+import { getNoteRaw, getVideo, listVideos, type VideoItem } from '@/services/video'
 import { formatDate, formatTime, getTaskAuthor, getTaskCoverUrl, getTaskTitle } from './utils'
 
 interface LibraryFolder {
@@ -47,48 +48,142 @@ function normalizeVideoStatus(status: string): Task['status'] {
   return 'RUNNING'
 }
 
-function backendVideoToTask(video: VideoItem, markdown: string): Task {
+type BackendTaskResult = NonNullable<TaskStatusResponse['result']>
+
+function hasTranscript(task: Task): boolean {
+  return Boolean(task.transcript?.full_text || task.transcript?.segments?.length)
+}
+
+function mergeRawInfo(rawInfo: unknown, video: VideoItem) {
+  const rawRecord = rawInfo && typeof rawInfo === 'object' ? rawInfo : {}
   return {
-    id: video.video_id,
-    status: normalizeVideoStatus(video.status),
+    ...rawRecord,
+    uploader: video.uploader || (rawRecord as { uploader?: unknown }).uploader || '',
+    bvid: video.bvid || (rawRecord as { bvid?: unknown }).bvid || '',
+    backend_video: video,
+  }
+}
+
+function backendVideoToTask(
+  video: VideoItem,
+  markdown: string,
+  options: {
+    id?: string
+    result?: BackendTaskResult | null
+    status?: Task['status']
+  } = {},
+): Task {
+  const resultAudioMeta = options.result?.audio_meta
+  const baseAudioMeta: Task['audioMeta'] = {
+    cover_url: video.cover_url || '',
+    duration: video.duration_seconds || 0,
+    file_path: video.audio_path || '',
+    platform: 'bilibili',
+    raw_info: {
+      uploader: video.uploader || '',
+      bvid: video.bvid || '',
+      backend_video: video,
+    },
+    title: video.title || video.url,
+    video_id: video.video_id,
+    source_url: video.source_url || video.url,
+    player_url: video.player_url || null,
+    embed_url: video.embed_url || null,
+    chapters: video.chapters || [],
+  }
+
+  return {
+    id: options.id || video.video_id,
+    status: options.status || normalizeVideoStatus(video.status),
     markdown:
+      options.result?.markdown ||
       markdown ||
       `# ${video.title || '后端视频笔记'}\n\n后端已返回视频记录，笔记原文暂未返回。`,
-    transcript: {
+    transcript: options.result?.transcript || {
       full_text: '',
       language: 'zh-CN',
       raw: null,
       segments: [],
     },
     audioMeta: {
-      cover_url: video.cover_url || '',
-      duration: video.duration_seconds || 0,
-      file_path: video.audio_path || '',
-      platform: 'bilibili',
-      raw_info: {
-        uploader: video.uploader || '',
-        backend_video: video,
-      },
-      title: video.title || video.url,
-      video_id: video.video_id,
+      ...baseAudioMeta,
+      ...resultAudioMeta,
+      raw_info: mergeRawInfo(resultAudioMeta?.raw_info || baseAudioMeta.raw_info, video),
+      title: resultAudioMeta?.title || baseAudioMeta.title,
+      video_id: resultAudioMeta?.video_id || baseAudioMeta.video_id,
+      source_url: resultAudioMeta?.source_url || baseAudioMeta.source_url,
+      player_url: resultAudioMeta?.player_url || baseAudioMeta.player_url,
+      embed_url: resultAudioMeta?.embed_url || baseAudioMeta.embed_url,
+      chapters: resultAudioMeta?.chapters || baseAudioMeta.chapters,
     },
     createdAt: video.created_at || new Date().toISOString(),
     formData: {
-      video_url: video.url,
+      video_url: video.source_url || video.url,
       link: true,
       screenshot: false,
       platform: 'bilibili',
       quality: '1080p',
-      model_name: 'backend',
-      provider_id: 'backend',
+      model_name: isMockBackend ? 'mock-backend' : 'backend',
+      provider_id: isMockBackend ? 'mock-backend' : 'backend',
       format: ['summary'],
       style: 'minimal',
     },
   }
 }
 
+function findExistingVideoTask(video: VideoItem, tasks: Task[]): Task | undefined {
+  return tasks.find(task => task.id === video.video_id || task.audioMeta?.video_id === video.video_id)
+}
+
+function latestTaskId(video: VideoItem): string | null {
+  const tasks = video.tasks || []
+  const completedTask = tasks.find(task =>
+    ['completed', 'success'].includes(String(task.status || '').toLowerCase()),
+  )
+  return completedTask?.task_id || tasks[0]?.task_id || null
+}
+
+async function loadBackendTaskResult(video: VideoItem): Promise<{
+  taskId: string | null
+  result: BackendTaskResult | null
+  status?: Task['status']
+}> {
+  if (!isMockBackend) return { taskId: null, result: null }
+
+  const detailedVideo =
+    video.tasks?.length
+      ? video
+      : await getVideo(video.video_id, { silent: true }).catch(() => video)
+  const taskId = latestTaskId(detailedVideo)
+  if (!taskId) return { taskId: null, result: null }
+
+  const task = await get_task_status(taskId).catch(() => null)
+  return {
+    taskId,
+    result: task?.result || null,
+    status: task?.status,
+  }
+}
+
+function mergeBackendTask(existing: Task | undefined, incoming: Task): Task {
+  if (!existing) return incoming
+
+  return {
+    ...existing,
+    ...incoming,
+    id: existing.id,
+    markdown: incoming.markdown || existing.markdown,
+    transcript: hasTranscript(incoming) ? incoming.transcript : existing.transcript,
+    audioMeta: {
+      ...existing.audioMeta,
+      ...incoming.audioMeta,
+      raw_info: incoming.audioMeta.raw_info || existing.audioMeta.raw_info,
+    },
+  }
+}
+
 export default function LibraryView({ onSelectTask }: LibraryViewProps) {
-  const tasks = useTaskStore(state => state.tasks)
+  const storedTasks = useTaskStore(state => state.tasks)
   const removeTask = useTaskStore(state => state.removeTask)
   const upsertTask = useTaskStore(state => state.upsertTask)
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null)
@@ -104,6 +199,10 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
   const [search, setSearch] = useState('')
   const [backendSyncing, setBackendSyncing] = useState(false)
   const [backendSyncFailed, setBackendSyncFailed] = useState(false)
+  const tasks = useMemo(
+    () => (isMockBackend ? storedTasks : storedTasks.filter(task => !isMockLikeTask(task))),
+    [storedTasks],
+  )
 
   useEffect(() => {
     localStorage.setItem(FOLDER_STORAGE_KEY, JSON.stringify(folders))
@@ -123,11 +222,19 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
         const res = await listVideos({ page: 1, page_size: 50 }, { silent: true })
         await Promise.all(
           res.items.map(async video => {
+            const currentTasks = useTaskStore.getState().tasks
+            const existingTask = findExistingVideoTask(video, currentTasks)
+            const taskResult = await loadBackendTaskResult(video)
             const markdown =
               video.status === 'completed'
                 ? await getNoteRaw(video.video_id, { silent: true }).catch(() => '')
                 : ''
-            if (!cancelled) upsertTask(backendVideoToTask(video, markdown))
+            const task = backendVideoToTask(video, markdown, {
+              id: existingTask?.id || taskResult.taskId || video.video_id,
+              result: taskResult.result,
+              status: taskResult.status,
+            })
+            if (!cancelled) upsertTask(mergeBackendTask(existingTask, task))
           }),
         )
       } catch {
@@ -373,10 +480,12 @@ function TaskCard({
 
   return (
     <div
-      className="group relative cursor-pointer overflow-hidden rounded-2xl border border-neutral-800 bg-[#161616] transition-colors hover:border-neutral-600"
+      className={`group relative cursor-pointer rounded-2xl border border-neutral-800 bg-[#161616] transition-colors hover:border-neutral-600 ${
+        openMenu ? 'z-30 overflow-visible' : 'overflow-hidden'
+      }`}
       onClick={onSelect}
     >
-      <div className="relative aspect-video overflow-hidden border-b border-neutral-800/50 bg-black">
+      <div className="relative aspect-video overflow-hidden rounded-t-2xl border-b border-neutral-800/50 bg-black">
         {coverUrl ? (
           <img
             src={coverUrl}

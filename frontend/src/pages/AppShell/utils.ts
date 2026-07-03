@@ -40,7 +40,12 @@ export function getTaskCoverUrl(task: Task | null | undefined): string {
   const rawCover = task?.audioMeta?.cover_url
   if (!rawCover) return ''
 
-  if (task?.audioMeta?.platform === 'local' || rawCover.startsWith('/')) {
+  if (
+    task?.audioMeta?.platform === 'local' ||
+    rawCover.startsWith('/') ||
+    rawCover.startsWith('data:') ||
+    rawCover.startsWith('blob:')
+  ) {
     return rawCover
   }
 

@@ -4,7 +4,7 @@ import { persist } from 'zustand/middleware'
 export type CacheDirectoryKey = 'downloads' | 'transcripts' | 'covers' | 'temp'
 
 export interface StoragePathConfig {
-  knowledgeBasePath: string
+  dataRootPath: string
   cacheRootPath: string
   cacheDirectories: Record<CacheDirectoryKey, string>
   lastCacheClearedAt: string | null
@@ -12,7 +12,7 @@ export interface StoragePathConfig {
 
 export function createDefaultStoragePathConfig(): StoragePathConfig {
   return {
-    knowledgeBasePath: './data/knowledge',
+    dataRootPath: './data',
     cacheRootPath: './data/cache',
     cacheDirectories: {
       downloads: './data/cache/downloads',

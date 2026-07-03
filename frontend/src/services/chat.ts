@@ -77,8 +77,10 @@ function searchResultToSource(source: ChatSource | SearchResultSource): ChatSour
 }
 
 export const indexTask = async (taskId: string, videoId?: string): Promise<void> => {
-  void taskId
-  void videoId
+  await request.post('/qa/index', {
+    task_id: taskId,
+    video_id: videoId,
+  })
 }
 
 export const askQuestion = async (data: {
@@ -136,10 +138,11 @@ export const getChatStatus = async (
   taskId: string,
   videoId?: string,
 ): Promise<ChatStatusResponse> => {
-  void taskId
-  void videoId
-  return {
-    indexed: true,
-    status: 'indexed',
-  }
+  return await request.get('/qa/index/status', {
+    params: {
+      task_id: taskId,
+      video_id: videoId,
+    },
+    suppressToast: true,
+  })
 }
