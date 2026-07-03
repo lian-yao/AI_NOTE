@@ -24,7 +24,10 @@ function readAppVersion() {
 export default defineConfig(({ mode }) => {
   // 在 Docker 环境中，父目录可能没有 .env 文件，使用当前目录
   const envDir = process.env.DOCKER_BUILD ? __dirname : path.resolve(__dirname, '../')
-  const env = loadEnv(mode, envDir)
+  const env = {
+    ...loadEnv(mode, envDir),
+    ...loadEnv(mode, __dirname),
+  }
 
   const apiBaseUrl = env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
   const port = parseInt(env.VITE_FRONTEND_PORT || '5173', 10)

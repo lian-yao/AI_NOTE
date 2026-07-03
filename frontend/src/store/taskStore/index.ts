@@ -5,6 +5,7 @@ import { retryBackendTask } from '@/services/task'
 import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 import { get, set, del } from 'idb-keyval'
+import { getApiBaseURL } from '@/utils/api'
 
 
 export type TaskStatus =
@@ -27,6 +28,14 @@ export interface AudioMeta {
   raw_info: unknown
   title: string
   video_id: string
+  source_url?: string
+  player_url?: string | null
+  embed_url?: string | null
+  chapters?: Array<{
+    title?: string
+    start_time?: number
+    end_time?: number
+  }>
 }
 
 export interface Segment {
@@ -84,6 +93,127 @@ interface TaskStore {
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
   retryTask: (id: string, payload?: Partial<Task['formData']>) => void
+}
+
+function storageSafeKey(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '')
+}
+
+const apiBaseURL = getApiBaseURL()
+const explicitBackendMode = String(import.meta.env.VITE_BACKEND_MODE || '').toLowerCase()
+export const isMockBackend =
+  explicitBackendMode === 'mock' ||
+  (explicitBackendMode !== 'real' && /(^|[:/])8010(\/|$)/.test(apiBaseURL))
+const taskStorageName = `task-storage:${isMockBackend ? 'mock' : 'real'}:${storageSafeKey(apiBaseURL)}`
+const legacyTaskStorageName = 'task-storage'
+
+function valueFromRecord(value: unknown, key: string): string {
+  if (!value || typeof value !== 'object') return ''
+  const record = value as Record<string, unknown>
+  const item = record[key]
+  return typeof item === 'string' ? item : ''
+}
+
+export function isMockLikeTask(task: Task | undefined): boolean {
+  if (!task) return false
+
+  const title = task.audioMeta?.title || ''
+  const rawInfo = task.audioMeta?.raw_info
+  const backendVideo =
+    rawInfo && typeof rawInfo === 'object'
+      ? (rawInfo as { backend_video?: unknown }).backend_video
+      : null
+  const author = valueFromRecord(rawInfo, 'uploader')
+  const videoId = task.audioMeta?.video_id || task.id || ''
+  const sourceUrl = task.formData?.video_url || task.audioMeta?.source_url || ''
+  const filePath = task.audioMeta?.file_path || ''
+  const coverUrl = task.audioMeta?.cover_url || ''
+  const providerId = task.formData?.provider_id || ''
+  const modelName = task.formData?.model_name || ''
+  const backendAudioPath = valueFromRecord(backendVideo, 'audio_path')
+  const backendVideoPath = valueFromRecord(backendVideo, 'video_path')
+
+  return (
+    providerId === 'preview' ||
+    providerId === 'mock-provider' ||
+    providerId === 'mock-backend' ||
+    modelName === 'mock-llm' ||
+    modelName === 'mock-backend' ||
+    sourceUrl.startsWith('preview://') ||
+    filePath.includes('mock_backend') ||
+    backendAudioPath.includes('mock_backend') ||
+    backendVideoPath.includes('mock_backend') ||
+    coverUrl.includes('/mock-cover/') ||
+    videoId.includes('BV1Mock') ||
+    title.startsWith('Bilibili demo') ||
+    author === 'Mock Studio'
+  )
+}
+
+function sanitizeStoredTaskValue(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  if (isMockBackend) return null
+
+  try {
+    const parsed = JSON.parse(value) as {
+      state?: {
+        tasks?: unknown
+        currentTaskId?: unknown
+      }
+      version?: unknown
+    }
+    const state = parsed.state || {}
+    const tasks = Array.isArray(state.tasks)
+      ? state.tasks.filter(task => !isMockLikeTask(task as Task))
+      : []
+    const currentTaskId =
+      typeof state.currentTaskId === 'string' &&
+      tasks.some(task => (task as Task).id === state.currentTaskId)
+        ? state.currentTaskId
+        : null
+
+    return JSON.stringify({
+      ...parsed,
+      state: {
+        ...state,
+        tasks,
+        currentTaskId,
+      },
+    })
+  } catch {
+    return value
+  }
+}
+
+async function migrateLegacyTaskStorage(name: string): Promise<string | null> {
+  if (isMockBackend) return null
+
+  const legacyValue = await get(legacyTaskStorageName)
+  const migratedValue = sanitizeStoredTaskValue(legacyValue)
+  if (!migratedValue) return null
+
+  await set(name, migratedValue)
+  await del(legacyTaskStorageName)
+  return migratedValue
+}
+
+function persistableTaskState(state: TaskStore) {
+  if (isMockBackend) {
+    return {
+      tasks: [],
+      currentTaskId: null,
+    }
+  }
+
+  const tasks = state.tasks.filter(task => !isMockLikeTask(task))
+  const currentTaskId = tasks.some(task => task.id === state.currentTaskId)
+    ? state.currentTaskId
+    : null
+
+  return {
+    tasks,
+    currentTaskId,
+  }
 }
 
 export const useTaskStore = create<TaskStore>()(
@@ -285,19 +415,29 @@ export const useTaskStore = create<TaskStore>()(
       setCurrentTask: taskId => set({ currentTaskId: taskId }),
     }),
     {
-      name: 'task-storage',
+      name: taskStorageName,
       storage: createJSONStorage(() => ({
         getItem: async (name: string): Promise<string | null> => {
           const value = await get(name)
-          return value ?? null
+          const sanitizedValue = sanitizeStoredTaskValue(value)
+          if (sanitizedValue) {
+            if (sanitizedValue !== value) await set(name, sanitizedValue)
+            return sanitizedValue
+          }
+          return migrateLegacyTaskStorage(name)
         },
         setItem: async (name: string, value: string): Promise<void> => {
+          if (isMockBackend) {
+            await del(name)
+            return
+          }
           await set(name, value)
         },
         removeItem: async (name: string): Promise<void> => {
           await del(name)
         },
       })),
+      partialize: persistableTaskState,
     }
   )
 )

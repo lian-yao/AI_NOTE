@@ -1,11 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Bubble, Sender } from '@ant-design/x'
-import type { BubbleItemType, BubbleListProps } from '@ant-design/x'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Trash2, ChevronDown, ChevronUp, BookOpen, UserRound, Bot, Maximize2, Minimize2 } from 'lucide-react'
+import { Loader2, Trash2, ChevronDown, ChevronUp, BookOpen, UserRound, Bot, Maximize2, Minimize2, SendHorizontal } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { useChatStore } from '@/store/chatStore'
 import { useTaskStore } from '@/store/taskStore'
@@ -54,7 +52,20 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
   const [loading, setLoading] = useState(false)
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null)
 
-  const messages = useChatStore(state => state.chatHistory[taskId] ?? [])
+  const rawMessages = useChatStore(state => state.chatHistory?.[taskId])
+  const messages = useMemo(
+    () =>
+      Array.isArray(rawMessages)
+        ? rawMessages
+          .filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant'))
+          .map(msg => ({
+            ...msg,
+            content: typeof msg.content === 'string' ? msg.content : String(msg.content ?? ''),
+            sources: Array.isArray(msg.sources) ? msg.sources : undefined,
+          }))
+        : [],
+    [rawMessages],
+  )
   const addMessage = useChatStore(state => state.addMessage)
   const clearChat = useChatStore(state => state.clearChat)
 
@@ -139,63 +150,6 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
     [loading, taskId, currentTask, videoId, messages, addMessage],
   )
 
-  // 转换为 Bubble.List 的数据格式
-  const bubbleItems = useMemo<BubbleItemType[]>(() => {
-    const items: BubbleItemType[] = messages.map((msg, i) => ({
-      key: `msg-${i}`,
-      role: msg.role === 'user' ? ('user' as const) : ('ai' as const),
-      content: msg.content,
-      footer:
-        msg.role === 'assistant' && msg.sources ? (
-          <SourceBadges sources={msg.sources} />
-        ) : undefined,
-    }))
-
-    if (loading) {
-      items.push({
-        key: 'loading',
-        role: 'ai' as const,
-        content: '思考中...',
-        loading: true,
-      })
-    }
-
-    return items
-  }, [messages, loading])
-
-  // Bubble 角色配置
-  const roles = useMemo<BubbleListProps['role']>(
-    () => ({
-      user: {
-        placement: 'end' as const,
-        avatar: (
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-500 text-white">
-            <UserRound className="h-4 w-4" />
-          </div>
-        ),
-        variant: 'filled' as const,
-        styles: { content: { background: '#3b82f6', color: '#fff' } },
-      },
-      ai: {
-        placement: 'start' as const,
-        avatar: (
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-neutral-500 text-white">
-            <Bot className="h-4 w-4" />
-          </div>
-        ),
-        variant: 'outlined' as const,
-        contentRender: (content: unknown) => (
-          <div className="markdown-body prose prose-sm max-w-none prose-p:my-1 prose-li:my-0.5 prose-headings:my-2">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {typeof content === 'string' ? content : String(content)}
-            </ReactMarkdown>
-          </div>
-        ),
-      },
-    }),
-    [],
-  )
-
   if (indexStatus === null || indexStatus === 'indexing' || indexStatus === 'idle') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-neutral-400">
@@ -264,7 +218,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
       </div>
 
       {/* 消息列表 */}
-      <div className="flex-1 overflow-hidden">
+      <div className="custom-scrollbar flex-1 overflow-y-auto p-3">
         {messages.length === 0 && !loading ? (
           <div className="flex h-full items-center justify-center text-center text-sm text-neutral-400">
             <div>
@@ -273,24 +227,82 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
             </div>
           </div>
         ) : (
-          <Bubble.List
-            items={bubbleItems}
-            role={roles}
-            style={{ height: '100%' }}
-          />
+          <div className="space-y-3">
+            {messages.map((msg, index) => {
+              const isUser = msg.role === 'user'
+              return (
+                <div
+                  key={`${msg.role}-${index}`}
+                  className={`flex gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}
+                >
+                  {!isUser && (
+                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-neutral-600 text-white">
+                      <Bot className="h-4 w-4" />
+                    </div>
+                  )}
+                  <div
+                    className={`max-w-[82%] rounded-xl px-3 py-2 text-sm ${
+                      isUser
+                        ? 'bg-blue-500 text-white'
+                        : 'border border-neutral-700 bg-[#202020] text-neutral-200'
+                    }`}
+                  >
+                    {isUser ? (
+                      <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+                    ) : (
+                      <div className="markdown-body prose prose-sm max-w-none prose-invert prose-p:my-1 prose-li:my-0.5 prose-headings:my-2">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {msg.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                    {msg.role === 'assistant' && Array.isArray(msg.sources) && (
+                      <SourceBadges sources={msg.sources} />
+                    )}
+                  </div>
+                  {isUser && (
+                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500 text-white">
+                      <UserRound className="h-4 w-4" />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {loading && (
+              <div className="flex items-center gap-2 text-sm text-neutral-400">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                思考中...
+              </div>
+            )}
+          </div>
         )}
       </div>
 
       {/* 输入区域 */}
-      <div className="border-t px-3 py-2">
-        <Sender
+      <form
+        className="flex shrink-0 gap-2 border-t p-3"
+        onSubmit={event => {
+          event.preventDefault()
+          void handleSend(input)
+        }}
+      >
+        <textarea
           value={input}
-          onChange={setInput}
-          onSubmit={handleSend}
-          loading={loading}
+          onChange={event => setInput(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              void handleSend(input)
+            }
+          }}
+          rows={1}
           placeholder="输入你的问题..."
+          className="min-h-10 flex-1 resize-none rounded-lg border border-neutral-700 bg-[#111111] px-3 py-2 text-sm text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-neutral-500"
         />
-      </div>
+        <Button type="submit" size="sm" disabled={loading || !input.trim()} className="h-10">
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+        </Button>
+      </form>
     </div>
   )
 }

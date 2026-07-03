@@ -52,3 +52,46 @@ npm install --legacy-peer-deps
 ```
 
 详细说明见 [环境搭建与快速启动指南](docs/环境搭建与快速启动指南.md)。
+
+## 开发启动脚本
+
+项目根目录提供了 PowerShell 启动脚本，可以根据参数选择真实后端或 mock 后端，并自动同时启动后端与前端。脚本会优先使用 `uv run uvicorn`；如果当前环境没有 `uv`，会自动回退到 `python -m uvicorn` 或 `py -m uvicorn`。
+
+脚本会在启动前检查端口：
+
+- 如果后端端口已经有服务并且 `/health` 可访问，会复用这个后端，不再重复启动。
+- 如果后端端口被其它程序占用，默认自动寻找下一个可用端口，并同步修改前端 `VITE_API_BASE_URL`。
+- 如果前端端口被占用，默认自动寻找下一个可用端口。
+- 如果希望端口被占用时直接报错，可加 `-StrictPorts`。
+
+使用 mock 后端：
+
+```powershell
+cd D:\code\github-pgm\AI_NOTE
+.\start-dev.ps1 -Backend mock
+```
+
+mock 后端默认会预置固定样例 `https://www.bilibili.com/video/BV1aeLqzUE6L`，用于稳定验证笔记、字幕脚本和原文细读。除此之外，mock 生成的任务只保存在内存里，不会作为真实知识库数据长期保留。如需启动完全空的 mock 后端，可显式加 `-NoSeedMockFixture`：
+
+```powershell
+.\start-dev.ps1 -Backend mock -NoSeedMockFixture
+```
+
+使用真实后端：
+
+```powershell
+cd D:\code\github-pgm\AI_NOTE
+.\start-dev.ps1 -Backend real
+```
+
+常用可选参数：
+
+```powershell
+.\start-dev.ps1 -Backend mock -MockBackendPort 8010 -FrontendPort 5173
+.\start-dev.ps1 -Backend real -RealBackendPort 8000 -FrontendPort 5173
+.\start-dev.ps1 -Backend real -RealBackendPort 8001 -FrontendPort 5174
+.\start-dev.ps1 -Backend real -StrictPorts
+```
+
+脚本会打开两个 PowerShell 窗口：一个运行后端，一个运行前端。mock 模式会启动 `mock_backend.app:app`，真实模式会启动 `app.main:app`；前端会自动设置 `VITE_API_BASE_URL` 指向所选后端。
+

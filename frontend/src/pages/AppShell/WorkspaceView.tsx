@@ -661,18 +661,20 @@ function VideoChatPanel({ task }: { task: Task | null }) {
   const author = getTaskAuthor(task)
   const createdAt = formatDate(task?.createdAt)
   const duration = formatTime(task?.audioMeta?.duration)
+  const taskId = task?.id
+  const taskStatus = task?.status
   const isPreviewTask = task?.formData.provider_id === 'preview'
 
   useEffect(() => {
     setChatReadyToLoad(false)
-    if (!task || task.status !== 'SUCCESS' || isPreviewTask) return
+    if (!taskId || taskStatus !== 'SUCCESS' || isPreviewTask) return
 
     const id = window.setTimeout(() => {
       setChatReadyToLoad(true)
     }, 350)
 
     return () => window.clearTimeout(id)
-  }, [isPreviewTask, task?.id, task?.status])
+  }, [isPreviewTask, taskId, taskStatus])
 
   if (!task) {
     return (
@@ -803,8 +805,7 @@ function VideoChatPanel({ task }: { task: Task | null }) {
   )
 }
 
-const ENABLE_WORKSPACE_MOCK =
-  import.meta.env.DEV || import.meta.env.VITE_ENABLE_WORKSPACE_MOCK === 'true'
+const ENABLE_WORKSPACE_MOCK = import.meta.env.VITE_ENABLE_WORKSPACE_MOCK === 'true'
 
 export default function WorkspaceView({
   task,
@@ -892,7 +893,7 @@ export default function WorkspaceView({
           ) : (
             <EmptyWorkspace
               onNewTask={onNewTask}
-              onPreviewDemo={() => setPreviewMode(true)}
+              onPreviewDemo={ENABLE_WORKSPACE_MOCK ? () => setPreviewMode(true) : undefined}
             />
           )}
         </div>

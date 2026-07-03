@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { useTaskStore } from '@/store/taskStore'
+import { isMockBackend, isMockLikeTask, useTaskStore } from '@/store/taskStore'
 import GenerateView from './GenerateView'
 import ShellSidebar from './ShellSidebar'
 import type { ShellView } from './utils'
@@ -95,9 +95,13 @@ export default function AppShell({
 }: AppShellProps) {
   const [currentView, setCurrentView] = useState<ShellView>(initialView)
   const [openTaskIds, setOpenTaskIds] = useState<string[]>([])
-  const tasks = useTaskStore(state => state.tasks)
+  const storedTasks = useTaskStore(state => state.tasks)
   const currentTaskId = useTaskStore(state => state.currentTaskId)
   const setCurrentTask = useTaskStore(state => state.setCurrentTask)
+  const tasks = useMemo(
+    () => (isMockBackend ? storedTasks : storedTasks.filter(task => !isMockLikeTask(task))),
+    [storedTasks],
+  )
 
   useEffect(() => {
     setCurrentView(initialView)
