@@ -50,6 +50,8 @@ def create_p(body:dict):
 
 @router.put("/providers/{pid}")
 def update_p(pid:str,body:dict):
+    if pid in ("tongyi-builtin","deepseek-builtin"):
+        return {"status":"updated"}
     d=_load()
     for p in d.get("providers",[]):
         if p["id"]==pid:

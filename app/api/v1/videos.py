@@ -69,8 +69,9 @@ async def parse_video(body: VideoParseRequest):
 
 @router.post("/process")
 async def process_video(body: VideoProcessRequest, orchestrator=Depends(get_orchestrator)):
-    """提交视频处理。"""
-    return await orchestrator.process_video(body.url)
+    """提交视频处理，返回 task_id，前端轮询进度。"""
+    task = await orchestrator.start_task(body.url)
+    return {"task_id": task.task_id, "video_id": task.video_id, "status": task.status.value}
 
 
 @router.get("/")

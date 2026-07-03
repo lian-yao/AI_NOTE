@@ -10,7 +10,20 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 @router.get("/{task_id}")
-def get_task(task_id: str, db: Session = Depends(get_db)):
+def get_task(task_id: str, request: Request, db: Session = Depends(get_db)):
+    # 1. Check orchestrator in-memory tasks first (real-time status)
+    orch = getattr(request.app.state, "orchestrator", None)
+    if orch:
+        pipe_task = orch.get_task(task_id)
+        if pipe_task:
+            return {
+                "task_id": pipe_task.task_id,
+                "video_id": pipe_task.video_id,
+                "status": pipe_task.status.value,
+                "progress": pipe_task.progress,
+                "message": pipe_task.error or "",
+            }
+    # 2. Fallback to DB Task records
     task = db.query(TaskModel).filter(TaskModel.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")

@@ -13,7 +13,7 @@ class VideoBase(BaseModel):
     uploader: Optional[str] = None
     uploader_uid: Optional[str] = None
     description: Optional[str] = None
-    duration_seconds: Optional[int] = None
+    duration_seconds: Optional[float] = None
     cover_url: Optional[str] = None
     bvid: Optional[str] = None
     avid: Optional[int] = None

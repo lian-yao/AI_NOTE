@@ -291,23 +291,29 @@ class PipelineOrchestrator:
             video_dir = parse_result.artifacts.get("video_dir", "")
             task.options["video_dir"] = video_dir
 
-            video = Video(
-                video_id=meta.get("video_id", ""),
-                url=task.source_url,
-                title=meta.get("title", task.source_url),
-                uploader=meta.get("uploader", ""),
-                uploader_uid=str(meta.get("uploader_uid", "")),
-                description=meta.get("description", ""),
-                duration_seconds=meta.get("duration_seconds"),
-                cover_url=meta.get("cover_url", ""),
-                bvid=meta.get("bvid"),
-                avid=meta.get("avid"),
-                status="pending",
-            )
-            db.add(video)
-            db.flush()
-            task.video_id = video.video_id
-            task.note_id = video.id
+            video_id = meta.get("video_id", "")
+            existing = db.query(Video).filter(Video.video_id == video_id).first()
+            if existing:
+                task.video_id = existing.video_id
+                task.note_id = existing.id
+            else:
+                video = Video(
+                    video_id=video_id,
+                    url=task.source_url,
+                    title=meta.get("title", task.source_url),
+                    uploader=meta.get("uploader", ""),
+                    uploader_uid=str(meta.get("uploader_uid", "")),
+                    description=meta.get("description", ""),
+                    duration_seconds=meta.get("duration_seconds"),
+                    cover_url=meta.get("cover_url", ""),
+                    bvid=meta.get("bvid"),
+                    avid=meta.get("avid"),
+                    status="pending",
+                )
+                db.add(video)
+                db.flush()
+                task.video_id = video.video_id
+                task.note_id = video.id
 
         elif stage == PipelineStage.DOWNLOAD:
             video_dir = task.options.get("video_dir", "")
@@ -389,6 +395,12 @@ class PipelineOrchestrator:
                 video = db.query(Video).filter(Video.video_id == task.video_id).first()
                 if video:
                     video.status = "generating"
+                    # 删除已有笔记（支持重新生成）
+                    old_note = db.query(Note).filter(Note.video_id == video.id).first()
+                    if old_note:
+                        db.query(Chunk).filter(Chunk.note_id == old_note.id).delete()
+                        db.delete(old_note)
+                        db.flush()
                     note = Note(
                         video_id=video.id,
                         file_path=str(note_file),
