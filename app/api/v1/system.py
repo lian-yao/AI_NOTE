@@ -3,6 +3,7 @@ System health API.
 """
 import time
 import shutil
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -15,12 +16,14 @@ from app.core.config import settings
 
 router = APIRouter(prefix="/system", tags=["system"])
 
+
 def _check_db(db: Session) -> str:
     try:
         db.execute(text("SELECT 1"))
         return "ok"
     except Exception:
         return "error"
+
 
 def _check_disk(data_dir: str) -> str:
     try:
@@ -156,5 +159,81 @@ async def system_ready():
         "data": {
             "ready": True,
             "version": "0.1.0"
+        }
+    }
+
+
+@router.get("/deploy-status")
+async def deploy_status():
+    """获取部署状态（后端、FFmpeg、CUDA、Whisper 等）。"""
+    # 检测 FFmpeg
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_available = ffmpeg_path is not None
+
+    # 如果 shutil.which 没找到，尝试用 subprocess 再试一次
+    if not ffmpeg_available:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            ffmpeg_available = result.returncode == 0
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+
+    # 检测 CUDA
+    cuda_available = False
+    cuda_version = None
+    gpu_name = None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            cuda_available = True
+            gpu_name = result.stdout.strip()
+            cuda_version = "检测到 NVIDIA GPU"
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    # 检测 PyTorch CUDA
+    torch_installed = False
+    torch_cuda_available = False
+    try:
+        import torch
+        torch_installed = True
+        torch_cuda_available = torch.cuda.is_available()
+        if torch_cuda_available:
+            cuda_version = f"CUDA {torch.version.cuda}"
+    except ImportError:
+        pass
+
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "backend": {
+                "status": "ok",
+                "port": 8000
+            },
+            "ffmpeg": {
+                "available": ffmpeg_available
+            },
+            "cuda": {
+                "available": cuda_available or torch_cuda_available,
+                "torch_installed": torch_installed,
+                "version": cuda_version,
+                "gpu_name": gpu_name
+            },
+            "whisper": {
+                "model_size": "base",
+                "transcriber_type": "fast-whisper",
+                "downloaded": False
+            }
         }
     }
