@@ -144,3 +144,37 @@ def get_system_stats(db: Session = Depends(get_db)):
         "storage_usage_bytes": storage_usage,
         "disk_free_bytes": disk_free,
     }
+
+@router.get("/ready")
+def system_ready():
+    """Quick readiness check for frontend."""
+    return {"status": "ok", "ready": True}
+
+
+@router.get("/deploy-status")
+def get_deploy_status():
+    """Check deployment status: ffmpeg, CUDA, etc."""
+    import shutil
+    ffmpeg_available = shutil.which("ffmpeg") is not None
+    cuda_available = False
+    torch_installed = False
+    try:
+        import torch
+        torch_installed = True
+        cuda_available = torch.cuda.is_available()
+    except ImportError:
+        pass
+    gpu_name = None
+    if cuda_available:
+        try:
+            import torch
+            gpu_name = torch.cuda.get_device_name(0)
+        except Exception:
+            pass
+    return {
+        "backend": {"status": "healthy", "port": 8000},
+        "cuda": {"available": cuda_available, "torch_installed": torch_installed,
+                 "version": None, "gpu_name": gpu_name},
+        "whisper": {"model_size": "tiny", "transcriber_type": "fast-whisper", "downloaded": False},
+        "ffmpeg": {"available": ffmpeg_available},
+    }
