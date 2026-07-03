@@ -37,6 +37,6 @@ async def update_platform_cookie(platform: str, body: CookieUpdate):
         "message": "success",
         "data": {
             "platform": platform,
-            "cookie": body.cookie,
+            "updated": True,
         },
     }
