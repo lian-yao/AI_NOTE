@@ -1,5 +1,5 @@
 """任务管理 API：状态查询、日志、重试。"""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -31,7 +31,13 @@ def get_task(task_id: str, request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/{task_id}/logs")
-def get_task_logs(task_id: str, level: str = Query(None), page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+def get_task_logs(
+    task_id: str,
+    level: str = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
     q = db.query(TaskLog).filter(TaskLog.task_id == task_id)
     if level:
         q = q.filter(TaskLog.level == level.upper())
