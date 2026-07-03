@@ -8,10 +8,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
-from pydantic import BaseModel
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -61,6 +61,7 @@ async def system_health(request: Request, db: Session = Depends(get_db)):
             "uptime_seconds": uptime,
         },
     }
+
 
 @router.get("/config")
 def get_system_config():
@@ -143,4 +144,17 @@ def get_system_stats(db: Session = Depends(get_db)):
         "total_duration_hours": round(total_hours, 1),
         "storage_usage_bytes": storage_usage,
         "disk_free_bytes": disk_free,
+    }
+
+
+@router.get("/ready")
+async def system_ready():
+    """轻量就绪检查，用于前端探测后端是否启动。"""
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "ready": True,
+            "version": "0.1.0"
+        }
     }
