@@ -3,9 +3,9 @@ Provider 管理（模拟实现，后续由角色A完善）
 默认载入通义千问和 DeepSeek，API Key 从 settings 读取。
 """
 import uuid
-from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+import httpx
 from app.core.config import settings
 from app.schemas.response import ApiResponse
 
@@ -22,7 +22,7 @@ def _init_default_providers():
             "name": "通义千问",
             "logo": "tongyi",
             "type": "tongyi",
-            "base_url": "https://dashscope.aliyuncs.com/api/v1",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "api_key": settings.tongyi_api_key,   # 真实 key，但 get 时不会返回明文
             "enabled": True,
             "created_at": "2026-07-03T00:00:00",
@@ -56,12 +56,12 @@ class CreateProviderRequest(BaseModel):
     enabled: bool = True
 
 class UpdateProviderRequest(BaseModel):
-    name: str
+    name: str | None = None       # 允许只更新部分字段
     logo: str = ""
     type: str = "openai-compatible"
-    base_url: str
+    base_url: str | None = None
     api_key: str | None = None   # 允许不更新 API Key
-    enabled: bool = True
+    enabled: bool | None = None
 
 # ---------- 接口 ----------
 @router.get("")
@@ -121,14 +121,19 @@ async def update_provider(provider_id: str, req: UpdateProviderRequest):
     p = _providers.get(provider_id)
     if not p:
         raise HTTPException(404, "Provider not found")
-    # 更新字段
-    p["name"] = req.name
-    p["logo"] = req.logo
-    p["type"] = req.type
-    p["base_url"] = req.base_url
+    # 更新字段（仅当请求中提供了值，支持部分更新）
+    if req.name is not None:
+        p["name"] = req.name
+    if req.logo:
+        p["logo"] = req.logo
+    if req.type:
+        p["type"] = req.type
+    if req.base_url is not None:
+        p["base_url"] = req.base_url
     if req.api_key is not None:
         p["api_key"] = req.api_key
-    p["enabled"] = req.enabled
+    if req.enabled is not None:
+        p["enabled"] = req.enabled
     p["updated_at"] = "2026-07-03T12:00:00"
     return ApiResponse(data={"updated": True})
 
@@ -152,20 +157,54 @@ async def test_provider(provider_id: str, body: dict = None):
 
 @router.get("/{provider_id}/remote-models")
 async def remote_models(provider_id: str):
-    """获取远程模型列表（模拟）"""
+    """
+    获取远程模型列表（通过 Provider 的真实 API 获取）
+    支持 OpenAI 兼容格式：GET {base_url}/models
+    """
     p = _providers.get(provider_id)
     if not p:
-        raise HTTPException(404, "Provider not found")
-    # 根据 provider 类型返回不同 mock 数据
-    if p["id"] == "tongyi":
-        models = [
-            {"id": "qwen-plus", "object": "model", "display_name": "Qwen-Plus", "owned_by": "tongyi"},
-            {"id": "qwen-turbo", "object": "model", "display_name": "Qwen-Turbo", "owned_by": "tongyi"},
-        ]
-    elif p["id"] == "deepseek":
-        models = [
-            {"id": "deepseek-chat", "object": "model", "display_name": "DeepSeek Chat", "owned_by": "deepseek"},
-        ]
-    else:
-        models = [{"id": "gpt-4o-mini", "object": "model", "display_name": "GPT-4o mini", "owned_by": "openai"}]
-    return ApiResponse(data={"models": models})
+        return ApiResponse(code=1, message="Provider 不存在", data={"models": []})
+
+    api_key = p.get("api_key", "")
+    base_url = p.get("base_url", "").rstrip("/")
+
+    if not api_key:
+        return ApiResponse(code=1, message="API Key 未配置，请先设置 API Key", data={"models": []})
+
+    models_url = f"{base_url}/models"
+
+    try:
+        async with httpx.AsyncClient(timeout=30, verify=False, follow_redirects=True) as client:
+            resp = await client.get(
+                models_url,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        # 解析 OpenAI 兼容格式：{ data: [{ id, object, owned_by }, ...] }
+        # 也兼容直接返回数组的情况
+        raw_list = data if isinstance(data, list) else data.get("data", [])
+
+        models = []
+        for m in raw_list:
+            if not isinstance(m, dict):
+                continue
+            model_id = m.get("id", "")
+            if not model_id:
+                continue
+            models.append({
+                "id": model_id,
+                "object": m.get("object", "model"),
+                "display_name": m.get("display_name", "") or m.get("id", ""),
+                "owned_by": m.get("owned_by", p["id"]),
+            })
+
+        return ApiResponse(data={"models": models})
+
+    except httpx.TimeoutException:
+        return ApiResponse(code=1, message=f"请求 Provider 模型列表超时，请检查网络连接（{models_url}）", data={"models": []})
+    except httpx.HTTPStatusError as e:
+        return ApiResponse(code=1, message=f"Provider 返回错误（{e.response.status_code}），请检查 API Key 和 Base URL 是否正确", data={"models": []})
+    except Exception as e:
+        return ApiResponse(code=1, message=f"获取远程模型列表失败：{str(e)[:200]}", data={"models": []})

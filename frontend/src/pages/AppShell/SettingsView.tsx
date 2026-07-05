@@ -518,7 +518,12 @@ function ProviderSection() {
     const nextEnabled = provider.enabled ? 0 : 1
     setSavingProviderId(provider.id)
     try {
-      await updateProviderById({ id: provider.id, enabled: nextEnabled })
+      await updateProviderById({
+        id: provider.id,
+        name: provider.name,
+        base_url: provider.baseUrl,
+        enabled: nextEnabled,
+      })
       await fetchProviderList()
       toast.success(nextEnabled ? 'Provider 已启用' : 'Provider 已禁用')
     } catch {
