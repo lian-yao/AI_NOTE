@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import time
 from urllib.parse import quote
 from urllib.parse import urlparse
@@ -44,6 +45,7 @@ class VideoParseRequest(BaseModel):
 class VideoPlayerRequest(BaseModel):
     url: str
     quality: str = "1080p"
+    video_id: str | None = None
 
 
 class VideoPlayerResponse(BaseModel):
@@ -51,6 +53,7 @@ class VideoPlayerResponse(BaseModel):
     source_url: str
     webpage_url: str | None = None
     stream_url: str | None = None
+    local_stream_url: str | None = None
     embed_url: str | None = None
     cover_url: str | None = None
     duration_seconds: int | None = None
@@ -58,6 +61,7 @@ class VideoPlayerResponse(BaseModel):
     ext: str | None = None
     height: int | None = None
     is_proxy_stream: bool = True
+    player_type: str = "embed"
 
 
 class VideoProcessRequest(BaseModel):
@@ -73,6 +77,7 @@ def get_orchestrator(request: Request):
 
 _PLAYER_CACHE_TTL_SECONDS = 10 * 60
 _PLAYER_CACHE: dict[str, tuple[float, dict]] = {}
+_MEDIA_EXTENSIONS = {".mp4", ".m4v", ".webm", ".mov", ".mkv"}
 
 
 def _is_supported_bilibili_url(url: str) -> bool:
@@ -89,6 +94,92 @@ def _target_height(quality: str) -> int:
     if "720" in value:
         return 720
     return 1080
+
+
+def _video_local_stream_path(video_id: str) -> str:
+    return f"/api/v1/videos/{quote(video_id, safe='')}/media"
+
+
+def _resolve_local_video_path(video: Video | None) -> Path | None:
+    if not video or not video.video_path:
+        return None
+
+    path = Path(video.video_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+
+    try:
+        path = path.resolve()
+    except OSError:
+        return None
+
+    if not path.is_file() or path.suffix.lower() not in _MEDIA_EXTENSIONS:
+        return None
+    return path
+
+
+def _parse_range_header(range_header: str | None, file_size: int) -> tuple[int, int] | None:
+    if not range_header or not range_header.startswith("bytes="):
+        return None
+
+    start_raw, _, end_raw = range_header.removeprefix("bytes=").partition("-")
+    try:
+        if start_raw:
+            start = int(start_raw)
+            end = int(end_raw) if end_raw else file_size - 1
+        else:
+            suffix_size = int(end_raw)
+            start = max(0, file_size - suffix_size)
+            end = file_size - 1
+    except ValueError:
+        return None
+
+    if start < 0 or start >= file_size:
+        return None
+    return start, min(end, file_size - 1)
+
+
+def _iter_file_range(path: Path, start: int, end: int):
+    with path.open("rb") as file:
+        file.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            chunk = file.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
+def _stream_local_file(path: Path, request: Request) -> StreamingResponse:
+    file_size = path.stat().st_size
+    media_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
+    range_header = request.headers.get("range")
+    file_range = _parse_range_header(range_header, file_size)
+
+    if file_range is None:
+        headers = {
+            "accept-ranges": "bytes",
+            "content-length": str(file_size),
+        }
+        return StreamingResponse(
+            _iter_file_range(path, 0, file_size - 1),
+            headers=headers,
+            media_type=media_type,
+        )
+
+    start, end = file_range
+    headers = {
+        "accept-ranges": "bytes",
+        "content-length": str(end - start + 1),
+        "content-range": f"bytes {start}-{end}/{file_size}",
+    }
+    return StreamingResponse(
+        _iter_file_range(path, start, end),
+        status_code=206,
+        headers=headers,
+        media_type=media_type,
+    )
 
 
 def _bilibili_embed_url(source_url: str, info: dict | None = None) -> str | None:
@@ -278,11 +369,35 @@ async def process_video(body: VideoProcessRequest, orchestrator=Depends(get_orch
 
 
 @router.post("/player/resolve", response_model=VideoPlayerResponse)
-async def resolve_video_player(body: VideoPlayerRequest):
+async def resolve_video_player(body: VideoPlayerRequest, db: Session = Depends(get_db)):
     """解析当前笔记视频的可播放地址。
 
     Cookie 只在后端使用，前端拿到的是本地代理流地址，避免泄露登录态。
     """
+    local_stream_url = None
+    local_video = None
+    if body.video_id:
+        local_video = db.query(Video).filter(Video.video_id == body.video_id).first()
+        if _resolve_local_video_path(local_video):
+            local_stream_url = _video_local_stream_path(body.video_id)
+
+    if local_stream_url and local_video:
+        embed_url = _bilibili_embed_url(body.url)
+        return VideoPlayerResponse(
+            title=local_video.title or "本地视频",
+            source_url=body.url,
+            webpage_url=local_video.url or body.url,
+            stream_url=local_stream_url,
+            local_stream_url=local_stream_url,
+            embed_url=embed_url,
+            cover_url=local_video.cover_url,
+            duration_seconds=int(local_video.duration_seconds) if local_video.duration_seconds else None,
+            format_id="local-file",
+            ext=Path(local_video.video_path or "").suffix.removeprefix(".") or "mp4",
+            is_proxy_stream=True,
+            player_type="local",
+        )
+
     info = await _resolve_player_info(body.url, body.quality)
     stream_url = (
         "/api/v1/videos/player/stream"
@@ -293,12 +408,14 @@ async def resolve_video_player(body: VideoPlayerRequest):
         source_url=info["source_url"],
         webpage_url=info.get("webpage_url"),
         stream_url=stream_url,
+        local_stream_url=None,
         embed_url=info.get("embed_url"),
         cover_url=info.get("cover_url"),
         duration_seconds=info.get("duration_seconds"),
         format_id=info.get("format_id"),
         ext=info.get("ext"),
         height=info.get("height"),
+        player_type="native",
     )
 
 
@@ -354,6 +471,20 @@ async def stream_video_player(
     )
 
 
+@router.get("/{video_id}/media")
+async def stream_local_video_media(
+    video_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """播放已下载到本地的视频文件，支持 Range 拖动。"""
+    video = db.query(Video).filter(Video.video_id == video_id).first()
+    path = _resolve_local_video_path(video)
+    if not path:
+        raise HTTPException(status_code=404, detail="本地视频文件不存在")
+    return _stream_local_file(path, request)
+
+
 @router.get("/")
 def list_videos(
     page: int = Query(1, ge=1),
@@ -386,7 +517,15 @@ def get_video(video_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/{video_id}")
-async def delete_video(video_id: str, db: Session = Depends(get_db)):
+async def delete_video(video_id: str, request: Request, db: Session = Depends(get_db)):
+    # Cancel an in-flight pipeline task before removing local artifacts.
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator:
+        for task_id, task in list(getattr(orchestrator, "_tasks", {}).items()):
+            if task.video_id == video_id:
+                orchestrator.cancel_task(task_id)
+                break
+
     video = db.query(Video).filter(Video.video_id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")

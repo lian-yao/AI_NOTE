@@ -19,6 +19,7 @@ export type TaskStatus =
   | 'SAVING'
   | 'SUCCESS'
   | 'FAILED'
+  | 'CANCELLED'
 
 export interface AudioMeta {
   cover_url: string
@@ -404,9 +405,26 @@ export const useTaskStore = create<TaskStore>()(
         // 调用后端删除接口（如果找到了任务）
         if (task) {
           await delete_task({
-            video_id: task.audioMeta.video_id,
-            platform: task.formData.platform,
+            video_id: task.audioMeta?.video_id || task.id,
+            platform: task.formData?.platform || "",
           })
+        }
+      },
+
+      cancelTask: async (id: string) => {
+        const { tasks } = get()
+        const task = tasks.find(t => t.id === id)
+        if (!task) return
+        // 标记为已取消，不再轮询
+        set(state => ({
+          tasks: state.tasks.filter(t => t.id !== id),
+        }))
+        try {
+          const { cancelBackendTask } = await import('@/services/note')
+          await cancelBackendTask(id)
+          toast.success('任务已取消')
+        } catch (e) {
+          console.error('取消失败:', e)
         }
       },
 

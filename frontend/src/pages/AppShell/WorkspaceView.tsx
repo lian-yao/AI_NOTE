@@ -24,7 +24,10 @@ import {
   FileText,
   Loader2,
   MessageSquare,
+  Maximize2,
+  Pause,
   PenSquare,
+  Play,
   Plus,
   RefreshCcw,
   Save,
@@ -77,6 +80,10 @@ const statusLabel: Record<string, string> = {
   RUNNING: '处理中',
 }
 
+const PREVIEW_VIDEO_SOURCE_URL = 'https://www.bilibili.com/video/BV1aeLqzUE6L/'
+const PREVIEW_VIDEO_BVID = 'BV1aeLqzUE6L'
+const PREVIEW_VIDEO_EMBED_URL = `https://player.bilibili.com/player.html?bvid=${PREVIEW_VIDEO_BVID}&page=1&high_quality=1&autoplay=0`
+
 function getStatusDotClass(status: Task['status']) {
   if (status === 'SUCCESS') return 'bg-primary'
   if (status === 'FAILED') return 'bg-red-400'
@@ -120,13 +127,22 @@ function createPreviewTask(
       duration: 360,
       file_path: '',
       platform: 'bilibili',
-      raw_info: { uploader: '示例作者' },
+      source_url: PREVIEW_VIDEO_SOURCE_URL,
+      player_url: PREVIEW_VIDEO_SOURCE_URL,
+      embed_url: PREVIEW_VIDEO_EMBED_URL,
+      raw_info: {
+        uploader: '示例作者',
+        bvid: PREVIEW_VIDEO_BVID,
+        source_url: PREVIEW_VIDEO_SOURCE_URL,
+        player_url: PREVIEW_VIDEO_SOURCE_URL,
+        embed_url: PREVIEW_VIDEO_EMBED_URL,
+      },
       title,
       video_id: id,
     },
     createdAt,
     formData: {
-      video_url: `preview://${id}`,
+      video_url: PREVIEW_VIDEO_SOURCE_URL,
       link: true,
       screenshot: false,
       platform: 'bilibili',
@@ -1164,6 +1180,11 @@ function getTaskSourceUrl(task: Task | null): string {
   )
 }
 
+function getTaskVideoId(task: Task | null): string {
+  if (!task) return ''
+  return task.audioMeta?.video_id || task.id || ''
+}
+
 function getTaskBvid(task: Task | null): string {
   if (!task) return ''
   const sourceUrl = getTaskSourceUrl(task)
@@ -1202,6 +1223,29 @@ function playerErrorMessage(error: unknown): string {
   return typeof detail === 'string' ? detail : '视频播放地址解析失败'
 }
 
+function isPlayerAuthError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const record = error as Record<string, unknown>
+  return (
+    record.status === 401 ||
+    record.statusCode === 401 ||
+    record.status === 403 ||
+    record.statusCode === 403
+  )
+}
+
+function formatPlayerTime(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '0:00'
+  const total = Math.floor(value)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
 function TaskVideoPlayer({
   task,
   title,
@@ -1211,24 +1255,60 @@ function TaskVideoPlayer({
   title: string
   coverUrl: string
 }) {
+  const videoRef = useRef<HTMLVideoElement>(null)
   const [playerSource, setPlayerSource] = useState<VideoPlayerSource | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [useEmbedFallback, setUseEmbedFallback] = useState(false)
+  const [playerMode, setPlayerMode] = useState<'native' | 'embed'>('native')
+  const [playing, setPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const [subtitlesVisible, setSubtitlesVisible] = useState(true)
   const [reloadKey, setReloadKey] = useState(0)
   const sourceUrl = getTaskSourceUrl(task)
+  const videoId = getTaskVideoId(task)
   const fallbackEmbedUrl = getTaskEmbedUrl(task)
   const embedUrl = playerSource?.embed_url || fallbackEmbedUrl
   const posterUrl = playerSource?.cover_url || coverUrl
-  const streamUrl = playerSource?.stream_url || ''
+  const streamUrl = playerSource?.local_stream_url || playerSource?.stream_url || ''
   const quality = task.formData?.quality || '1080p'
+  const segments = useMemo(() => task.transcript?.segments || [], [task.transcript?.segments])
+  const knownDuration = duration || playerSource?.duration_seconds || task.audioMeta?.duration || 0
+  const activeSegment = useMemo(() => {
+    return segments.find(segment => currentTime >= segment.start && currentTime < segment.end) || null
+  }, [currentTime, segments])
+  const timelineMarkers = useMemo(() => {
+    const chapters = task.audioMeta?.chapters || []
+    if (chapters.length > 0) {
+      return chapters
+        .map((chapter, index) => ({
+          key: `chapter-${index}`,
+          title: chapter.title || `章节 ${index + 1}`,
+          time: Number(chapter.start_time || 0),
+        }))
+        .filter(marker => marker.time >= 0)
+    }
+
+    return segments
+      .filter((_, index) => index % 8 === 0)
+      .slice(0, 28)
+      .map((segment, index) => ({
+        key: `segment-${index}`,
+        title: segment.text,
+        time: segment.start,
+      }))
+  }, [segments, task.audioMeta?.chapters])
 
   useEffect(() => {
     let cancelled = false
 
     setPlayerSource(null)
     setError('')
-    setUseEmbedFallback(false)
+    setPlayerMode('native')
+    setCurrentTime(0)
+    setDuration(0)
+    setPlaying(false)
 
     if (!sourceUrl) {
       setError('当前笔记缺少视频链接')
@@ -1241,16 +1321,20 @@ function TaskVideoPlayer({
     }
 
     setLoading(true)
-    resolveVideoPlayer(sourceUrl, quality, { silent: true })
+    resolveVideoPlayer(sourceUrl, quality, videoId, { silent: true })
       .then(data => {
         if (cancelled) return
         setPlayerSource(data)
-        setUseEmbedFallback(!data.stream_url && Boolean(data.embed_url || fallbackEmbedUrl))
+        const hasNativeSource = Boolean(data.local_stream_url || data.stream_url)
+        setPlayerMode(hasNativeSource ? 'native' : 'embed')
+        if (!hasNativeSource && !(data.embed_url || fallbackEmbedUrl)) {
+          setError('暂无可播放视频源')
+        }
       })
       .catch(err => {
         if (cancelled) return
         setError(playerErrorMessage(err))
-        setUseEmbedFallback(Boolean(fallbackEmbedUrl))
+        setPlayerMode(!isPlayerAuthError(err) && fallbackEmbedUrl ? 'embed' : 'native')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -1259,17 +1343,72 @@ function TaskVideoPlayer({
     return () => {
       cancelled = true
     }
-  }, [fallbackEmbedUrl, quality, reloadKey, sourceUrl])
+  }, [fallbackEmbedUrl, quality, reloadKey, sourceUrl, videoId])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    video.playbackRate = playbackRate
+  }, [playbackRate, streamUrl])
 
   const handleRetry = () => {
     setReloadKey(value => value + 1)
   }
 
-  const canShowEmbed = useEmbedFallback && Boolean(embedUrl)
-  const canShowVideo = !useEmbedFallback && Boolean(streamUrl)
+  const togglePlay = () => {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) {
+      void video.play()
+    } else {
+      video.pause()
+    }
+  }
+
+  const seekTo = (value: number) => {
+    const video = videoRef.current
+    if (!video) return
+    video.currentTime = value
+    setCurrentTime(value)
+  }
+
+  const requestFullscreen = () => {
+    const host = videoRef.current?.parentElement
+    if (host?.requestFullscreen) {
+      void host.requestFullscreen()
+    }
+  }
+
+  const canUseNative = Boolean(streamUrl)
+  const canUseEmbed = Boolean(embedUrl)
+  const canShowEmbed = playerMode === 'embed' && canUseEmbed
+  const canShowVideo = playerMode === 'native' && canUseNative
 
   return (
     <div className="relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black">
+      <div className="absolute top-3 left-3 z-20 flex items-center gap-1 rounded-full bg-black/70 p-1 text-xs text-neutral-200 backdrop-blur-sm">
+        <button
+          type="button"
+          onClick={() => setPlayerMode('native')}
+          disabled={!canUseNative}
+          className={`rounded-full px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+            playerMode === 'native' ? 'bg-neutral-100 text-neutral-950' : 'hover:bg-neutral-800'
+          }`}
+        >
+          本地
+        </button>
+        <button
+          type="button"
+          onClick={() => setPlayerMode('embed')}
+          disabled={!canUseEmbed}
+          className={`rounded-full px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+            playerMode === 'embed' ? 'bg-neutral-100 text-neutral-950' : 'hover:bg-neutral-800'
+          }`}
+        >
+          B站
+        </button>
+      </div>
+
       {canShowEmbed ? (
         <iframe
           key={embedUrl}
@@ -1281,19 +1420,127 @@ function TaskVideoPlayer({
           className="h-full w-full border-0 bg-black"
         />
       ) : canShowVideo ? (
-        <video
-          key={`${streamUrl}-${reloadKey}`}
-          src={streamUrl}
-          poster={posterUrl || undefined}
-          controls
-          preload="metadata"
-          playsInline
-          className="h-full w-full bg-black object-contain"
-          onError={() => {
-            setError('内置播放器加载失败，已切换到 B 站播放器兜底')
-            setUseEmbedFallback(Boolean(embedUrl))
-          }}
-        />
+        <>
+          <video
+            ref={videoRef}
+            key={`${streamUrl}-${reloadKey}`}
+            src={streamUrl}
+            poster={posterUrl || undefined}
+            preload="metadata"
+            playsInline
+            className="h-full w-full bg-black object-contain"
+            onClick={togglePlay}
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onLoadedMetadata={event => {
+              const mediaDuration = event.currentTarget.duration
+              setDuration(Number.isFinite(mediaDuration) ? mediaDuration : 0)
+              event.currentTarget.playbackRate = playbackRate
+            }}
+            onTimeUpdate={event => setCurrentTime(event.currentTarget.currentTime)}
+            onError={() => {
+              setError('本地播放器加载失败，可切换到 B 站播放器兜底')
+              if (embedUrl) setPlayerMode('embed')
+            }}
+          />
+
+          {!playing && (
+            <button
+              type="button"
+              onClick={togglePlay}
+              className="absolute left-1/2 top-1/2 z-10 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
+              aria-label="播放"
+            >
+              <Play size={30} fill="currentColor" />
+            </button>
+          )}
+
+          {subtitlesVisible && activeSegment && (
+            <div className="pointer-events-none absolute inset-x-6 bottom-20 z-10 flex justify-center">
+              <div className="max-w-full rounded-lg bg-black/72 px-3 py-2 text-center text-sm leading-relaxed text-white shadow-2xl backdrop-blur-sm">
+                {activeSegment.text}
+              </div>
+            </div>
+          )}
+
+          <div className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-3 pb-3 pt-12">
+            <div className="relative mb-2 h-5">
+              <div className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/18" />
+              {knownDuration > 0 &&
+                timelineMarkers.map(marker => {
+                  const left = Math.min(100, Math.max(0, (marker.time / knownDuration) * 100))
+                  return (
+                    <button
+                      key={marker.key}
+                      type="button"
+                      onClick={() => seekTo(marker.time)}
+                      className="absolute top-1/2 z-10 h-3 w-1 -translate-y-1/2 rounded-full bg-emerald-300/80 transition-transform hover:scale-y-125"
+                      style={{ left: `${left}%` }}
+                      title={`${formatPlayerTime(marker.time)} ${marker.title}`}
+                      aria-label={`跳转到 ${formatPlayerTime(marker.time)}`}
+                    />
+                  )
+                })}
+              <input
+                type="range"
+                min={0}
+                max={Math.max(knownDuration, currentTime, 1)}
+                step={0.1}
+                value={currentTime}
+                onChange={event => seekTo(Number(event.target.value))}
+                className="absolute inset-x-0 top-1/2 h-5 -translate-y-1/2 cursor-pointer appearance-none bg-transparent accent-emerald-300"
+                aria-label="视频进度"
+              />
+            </div>
+            <div className="flex items-center gap-2 text-xs text-neutral-100">
+              <button
+                type="button"
+                onClick={togglePlay}
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 transition-colors hover:bg-white/20"
+                aria-label={playing ? '暂停' : '播放'}
+              >
+                {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+              </button>
+              <span className="min-w-[74px] font-mono text-[11px] text-neutral-200">
+                {formatPlayerTime(currentTime)} / {formatPlayerTime(knownDuration)}
+              </span>
+              <div className="ml-auto flex items-center gap-1">
+                {[0.75, 1, 1.25, 1.5, 2].map(rate => (
+                  <button
+                    key={rate}
+                    type="button"
+                    onClick={() => setPlaybackRate(rate)}
+                    className={`rounded-md px-2 py-1 text-[11px] transition-colors ${
+                      playbackRate === rate ? 'bg-white text-black' : 'bg-white/10 hover:bg-white/20'
+                    }`}
+                  >
+                    {rate}x
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setSubtitlesVisible(value => !value)}
+                  className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                    subtitlesVisible ? 'bg-white text-black' : 'bg-white/10 hover:bg-white/20'
+                  }`}
+                  title={subtitlesVisible ? '隐藏字幕' : '显示字幕'}
+                  aria-label={subtitlesVisible ? '隐藏字幕' : '显示字幕'}
+                >
+                  <Subtitles size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={requestFullscreen}
+                  className="flex h-7 w-7 items-center justify-center rounded-md bg-white/10 transition-colors hover:bg-white/20"
+                  title="全屏"
+                  aria-label="全屏"
+                >
+                  <Maximize2 size={15} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
       ) : (
         <div className="absolute inset-0 flex items-center justify-center bg-neutral-950">
           {posterUrl ? (
@@ -1328,7 +1575,7 @@ function TaskVideoPlayer({
       )}
 
       {!loading && (playerSource?.height || playerSource?.ext) && !canShowEmbed && (
-        <div className="absolute top-3 left-3 rounded-full bg-black/70 px-2.5 py-1 text-xs text-neutral-100 backdrop-blur-sm">
+        <div className="absolute top-3 left-[108px] z-20 rounded-full bg-black/70 px-2.5 py-1 text-xs text-neutral-100 backdrop-blur-sm">
           {[playerSource.height ? `${playerSource.height}p` : '', playerSource.ext?.toUpperCase()]
             .filter(Boolean)
             .join(' · ')}
@@ -1365,7 +1612,7 @@ function TaskVideoPlayer({
                 {embedUrl && (
                   <button
                     type="button"
-                    onClick={() => setUseEmbedFallback(true)}
+                    onClick={() => setPlayerMode('embed')}
                     className="rounded-md border border-neutral-700 px-2 py-1 text-xs text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-800"
                   >
                     使用 B 站播放器

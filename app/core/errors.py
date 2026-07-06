@@ -174,13 +174,16 @@ async def sqlalchemy_error_handler(
     request: Request, exc: SQLAlchemyError
 ) -> JSONResponse:
     """处理数据库异常。"""
+    err_msg = str(exc)
+    if len(err_msg) > 150:
+        err_msg = err_msg[:150] + "..."
     logger.error("DatabaseError | {exc}", exc=str(exc))
     return JSONResponse(
         status_code=500,
         content={
             "error": {
                 "code": "DATABASE_ERROR",
-                "message": "数据库操作失败，请稍后重试",
+                "message": err_msg,
                 "status": 500,
                 "detail": {},
             }
@@ -190,13 +193,18 @@ async def sqlalchemy_error_handler(
 
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """处理未被上述处理器捕获的异常。"""
+    err_msg = str(exc)
+    if len(err_msg) > 150:
+        err_msg = err_msg[:150] + "..."
     logger.error("UnhandledError | {exc}", exc=str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
         content={
+            "code": 1,
+            "message": err_msg,
             "error": {
                 "code": "INTERNAL_ERROR",
-                "message": "服务器内部错误，请稍后重试",
+                "message": err_msg,
                 "status": 500,
                 "detail": {},
             }

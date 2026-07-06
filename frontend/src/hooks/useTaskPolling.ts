@@ -19,7 +19,7 @@ export const useTaskPolling = (interval = 3000, enabled = true) => {
 
     const timer = setInterval(async () => {
       const pendingTasks = tasksRef.current.filter(
-        task => task.status != 'SUCCESS' && task.status != 'FAILED'
+        task => task.status != 'SUCCESS' && task.status != 'FAILED' && task.status != 'CANCELLED'
       )
 
       // 无活跃任务时跳过轮询

@@ -16,6 +16,18 @@ export interface DownloaderCookie {
   cookie: string
 }
 
+export interface DownloaderCookieValidation {
+  platform: string
+  valid: boolean
+  is_login: boolean
+  username?: string | null
+  mid?: number | string | null
+  level?: number | string | null
+  vip_status?: number | string | null
+  vip_type?: number | string | null
+  message?: string | null
+}
+
 export const getDownloaderCookie = async (
   platform?: string,
   opts?: CallOpts,
@@ -55,4 +67,15 @@ export const updateDownloaderCookie = async (data: { cookie: string; platform: s
     }
     throw error
   }
+}
+
+export const validateDownloaderCookie = async (
+  data: { cookie?: string; platform: string },
+  opts?: CallOpts,
+): Promise<DownloaderCookieValidation> => {
+  return await request.post(
+    `/platforms/${encodeURIComponent(data.platform)}/cookie/validate`,
+    { cookie: data.cookie },
+    cfg(opts),
+  )
 }

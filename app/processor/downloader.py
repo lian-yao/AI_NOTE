@@ -54,6 +54,7 @@ async def download_video(
     fmt = quality_map.get(quality, quality_map["1080p"])
 
     output_template = str(video_dir_path / "%(title)s.%(ext)s")
+    media_extensions = {".mp4", ".m4v", ".mkv", ".webm", ".mov"}
 
     # 进度追踪
     last_pct = 0
@@ -77,6 +78,7 @@ async def download_video(
         opts = {
             "format": fmt,
             "outtmpl": output_template,
+            "merge_output_format": "mp4",
             "quiet": True,
             "no_warnings": True,
             "progress_hooks": [_yt_dlp_hook],
@@ -103,7 +105,17 @@ async def download_video(
                         save_browser_cookies_to_cache(browser_cache_path, ydl.cookiejar)
                     except Exception:
                         pass
-                return ydl.prepare_filename(info)
+                prepared = Path(ydl.prepare_filename(info))
+                if prepared.is_file():
+                    return str(prepared)
+
+                candidates = [
+                    path for path in video_dir_path.iterdir()
+                    if path.is_file() and path.suffix.lower() in media_extensions
+                ]
+                if candidates:
+                    return str(max(candidates, key=lambda path: path.stat().st_mtime))
+                return str(prepared)
 
         try:
             return await loop.run_in_executor(None, _sync_download)

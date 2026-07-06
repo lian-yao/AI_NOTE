@@ -257,6 +257,36 @@ async def process_video(body: dict[str, Any]) -> dict[str, Any]:
     return ok(store.create_task(body))
 
 
+@router.post("/videos/player/resolve")
+async def resolve_video_player(body: dict[str, Any]) -> dict[str, Any]:
+    url = str(body.get("url") or body.get("source_url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    parsed = store.parse_video_url(url)
+    cookie = store.cookies.get("bilibili", "")
+    if not cookie:
+        raise HTTPException(status_code=401, detail="mock Bilibili Cookie is empty")
+
+    return ok(
+        {
+            "title": parsed["title"],
+            "source_url": parsed["source_url"],
+            "webpage_url": parsed.get("player_url") or parsed["source_url"],
+            "stream_url": None,
+            "local_stream_url": None,
+            "embed_url": parsed.get("embed_url"),
+            "cover_url": parsed.get("cover_url"),
+            "duration_seconds": parsed.get("duration_seconds"),
+            "format_id": "mock-bilibili-embed",
+            "ext": "iframe",
+            "height": 1080,
+            "is_proxy_stream": False,
+            "player_type": "embed",
+        }
+    )
+
+
 @router.get("/videos")
 @router.get("/videos/")
 async def list_videos(
@@ -668,6 +698,25 @@ async def get_platform_cookie(platform: str) -> dict[str, Any]:
 async def update_platform_cookie(platform: str, body: dict[str, Any]) -> dict[str, Any]:
     store.cookies[platform] = str(body.get("cookie") or "")
     return ok({"platform": platform, "updated": True})
+
+
+@router.post("/platforms/{platform}/cookie/validate")
+async def validate_platform_cookie(platform: str, body: dict[str, Any]) -> dict[str, Any]:
+    cookie = str(body.get("cookie") if body.get("cookie") is not None else store.cookies.get(platform, ""))
+    is_login = bool(cookie.strip())
+    return ok(
+        {
+            "platform": platform,
+            "valid": is_login,
+            "is_login": is_login,
+            "username": "Mock Bilibili 用户" if is_login else None,
+            "mid": 10086 if is_login else None,
+            "level": 6 if is_login else None,
+            "vip_status": 1 if is_login else 0,
+            "vip_type": 2 if is_login else 0,
+            "message": "mock Cookie 有效，已登录" if is_login else "mock Cookie 为空",
+        }
+    )
 
 
 @router.get("/network/proxy")

@@ -7,6 +7,9 @@ export interface IResponse<T = unknown> {
   message?: string
   msg?: string
   detail?: string
+  error?: {
+    message?: string
+  }
   status?: number
   statusCode?: number
   data: T
@@ -21,7 +24,7 @@ declare module 'axios' {
 
 function responseMessage(res: Partial<IResponse> | undefined, fallback: string): string {
   if (!res) return fallback
-  return res.message || res.msg || res.detail || fallback
+  return res.error?.message || res.message || res.msg || res.detail || fallback
 }
 
 export function isNotFoundError(error: unknown): boolean {

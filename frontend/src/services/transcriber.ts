@@ -43,7 +43,7 @@ export interface ModelsStatusResponse {
 
 const defaultTranscriberConfig: TranscriberConfig = {
   transcriber_type: 'fast-whisper',
-  whisper_model_size: 'base',
+  whisper_model_size: 'small',
   available_types: [
     { value: 'fast-whisper', label: 'fast-whisper' },
     { value: 'mlx-whisper', label: 'mlx-whisper' },

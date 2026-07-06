@@ -15,10 +15,26 @@ AVAILABLE_TYPES = [
 ]
 WHISPER_MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 
-_runtime_config = {
-    "transcriber_type": "fast-whisper",
-    "whisper_model_size": settings.whisper_model_size or "base",
-}
+_CONFIG_FILE = Path(settings.data_dir) / "transcriber_config.json"
+
+def _load_config():
+    default = {
+        "transcriber_type": "fast-whisper",
+        "whisper_model_size": settings.whisper_model_size or "small",
+    }
+    if _CONFIG_FILE.exists():
+        try:
+            loaded = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+            default.update(loaded)
+        except Exception:
+            pass
+    return default
+
+_runtime_config = _load_config()
+
+def _save_config():
+    _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG_FILE.write_text(json.dumps(_runtime_config, ensure_ascii=False), encoding="utf-8")
 
 
 @router.get("/config")
@@ -48,6 +64,8 @@ def update_transcriber_config(body: TranscriberConfigUpdate):
     if body.whisper_model_size:
         _runtime_config["whisper_model_size"] = body.whisper_model_size
         updated.append("whisper_model_size")
+    if updated:
+        _save_config()
     return {"updated_fields": updated}
 
 
@@ -75,7 +93,7 @@ def download_model(body: DownloadModelPayload):
     return {"status": "started", "message": f"Mock: would download {body.model_size}"}
 
 
-WHISPER_MODELS_FILE = "data/whisper_models.json"
+WHISPER_MODELS_FILE = os.path.join(settings.data_dir, "whisper_models.json")
 
 
 @router.get("/whisper-models")

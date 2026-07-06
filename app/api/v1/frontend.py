@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from app.core.config import settings
+from app.core.cookie_store import get_cookie as get_stored_cookie
+from app.core.cookie_store import set_cookie as set_stored_cookie
 
 router = APIRouter(tags=["frontend"])
 
@@ -53,11 +55,17 @@ def del_wm(name:str):
 # ---- Platform Cookies ----
 @router.get("/platforms/{platform}/cookie")
 def get_cookie(platform:str):
-    c=_load().get("cookies",{}); return {"platform":platform,"cookie":c.get(platform,"")}
+    legacy_cookie = _load().get("cookies",{}).get(platform,"")
+    cookie = get_stored_cookie(platform) or legacy_cookie
+    if cookie and not get_stored_cookie(platform):
+        set_stored_cookie(platform, cookie)
+    return {"platform":platform,"cookie":cookie}
 
 @router.put("/platforms/{platform}/cookie")
 def set_cookie(platform:str,body:dict):
-    d=_load(); d.setdefault("cookies",{})[platform]=body["cookie"]; _save(d); return {"platform":platform,"cookie":body["cookie"]}
+    cookie = body["cookie"]
+    set_stored_cookie(platform, cookie)
+    d=_load(); d.setdefault("cookies",{})[platform]=cookie; _save(d); return {"platform":platform,"cookie":cookie}
 
 # ---- Network Proxy ----
 @router.get("/network/proxy")

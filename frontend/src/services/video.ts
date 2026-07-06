@@ -86,6 +86,7 @@ export interface VideoPlayerSource {
   source_url: string
   webpage_url?: string | null
   stream_url?: string | null
+  local_stream_url?: string | null
   embed_url?: string | null
   cover_url?: string | null
   duration_seconds?: number | null
@@ -93,6 +94,7 @@ export interface VideoPlayerSource {
   ext?: string | null
   height?: number | null
   is_proxy_stream?: boolean
+  player_type?: 'local' | 'native' | 'embed' | string
 }
 
 export function resolveApiMediaUrl(value: string | null | undefined): string {
@@ -128,17 +130,19 @@ export const parseVideo = async (url: string, opts?: CallOpts): Promise<ParseVid
 export const resolveVideoPlayer = async (
   url: string,
   quality = '1080p',
+  videoId?: string,
   opts?: CallOpts,
 ): Promise<VideoPlayerSource> => {
   const data = await request.post<unknown, VideoPlayerSource>(
     '/videos/player/resolve',
-    { url, quality },
+    { url, quality, video_id: videoId },
     cfg(opts),
   )
 
   return {
     ...data,
     stream_url: resolveApiMediaUrl(data.stream_url),
+    local_stream_url: resolveApiMediaUrl(data.local_stream_url),
   }
 }
 
