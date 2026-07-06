@@ -1,11 +1,11 @@
 """任务管理 API：状态查询、日志、重试。"""
 import json
 from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.paths import project_root
 from app.models.task import Task as TaskModel
 from app.models.task_log import TaskLog
 
@@ -33,6 +33,9 @@ def _read_transcript(video) -> dict:
             continue
         path = Path(value)
         paths.append(path.parent / "transcription.json")
+    video_id = getattr(video, "video_id", "")
+    if video_id:
+        paths.append(Path(project_root()) / "data" / "videos" / video_id / "transcription.json")
 
     for path in paths:
         if not path.exists():
@@ -306,4 +309,3 @@ def cancel_task(task_id: str, request: Request, db: Session = Depends(get_db)):
         t.error_message = "已被用户取消"
     db.commit()
     return {"task_id": task_id, "status": "cancelled", "cancelled": cancelled_any}
-

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+import re
 import time
 from urllib.parse import quote
 from urllib.parse import urlparse
@@ -88,6 +89,7 @@ def get_orchestrator(request: Request):
 _PLAYER_CACHE_TTL_SECONDS = 10 * 60
 _PLAYER_CACHE: dict[str, tuple[float, dict]] = {}
 _MEDIA_EXTENSIONS = {".mp4", ".m4v", ".webm", ".mov", ".mkv"}
+_BVID_PATTERN = re.compile(r"BV[0-9A-Za-z]{10}")
 
 
 def _is_supported_bilibili_url(url: str) -> bool:
@@ -126,6 +128,61 @@ def _resolve_local_video_path(video: Video | None) -> Path | None:
     if not path.is_file() or path.suffix.lower() not in _MEDIA_EXTENSIONS:
         return None
     return path
+
+
+def _extract_bvid(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = _BVID_PATTERN.search(value)
+    return match.group(0) if match else None
+
+
+def _find_video_for_player(
+    db: Session,
+    video_id: str | None,
+    source_url: str | None,
+) -> Video | None:
+    video_ids: list[str] = []
+    bvids: list[str] = []
+
+    for value in (video_id, source_url):
+        if not value:
+            continue
+        candidate = value.strip()
+        if candidate:
+            video_ids.append(candidate)
+
+        bvid = _extract_bvid(candidate)
+        if bvid:
+            bvids.append(bvid)
+            video_ids.append(f"b_{bvid}")
+
+    seen_video_ids: set[str] = set()
+    for candidate in video_ids:
+        if candidate in seen_video_ids:
+            continue
+        seen_video_ids.add(candidate)
+        video = db.query(Video).filter(Video.video_id == candidate).first()
+        if video:
+            return video
+        if candidate.isdigit():
+            video = db.query(Video).filter(Video.id == int(candidate)).first()
+            if video:
+                return video
+
+    seen_bvids: set[str] = set()
+    for bvid in bvids:
+        if bvid in seen_bvids:
+            continue
+        seen_bvids.add(bvid)
+        video = db.query(Video).filter(Video.bvid == bvid).first()
+        if video:
+            return video
+
+    if source_url:
+        return db.query(Video).filter(Video.url == source_url).first()
+
+    return None
 
 
 def _parse_range_header(range_header: str | None, file_size: int) -> tuple[int, int] | None:
@@ -193,8 +250,6 @@ def _stream_local_file(path: Path, request: Request) -> StreamingResponse:
 
 
 def _bilibili_embed_url(source_url: str, info: dict | None = None) -> str | None:
-    import re
-
     bvid = None
     if info:
         bvid = info.get("id") or info.get("display_id")
@@ -411,11 +466,9 @@ async def resolve_video_player(body: VideoPlayerRequest, db: Session = Depends(g
     Cookie 只在后端使用，前端拿到的是本地代理流地址，避免泄露登录态。
     """
     local_stream_url = None
-    local_video = None
-    if body.video_id:
-        local_video = db.query(Video).filter(Video.video_id == body.video_id).first()
-        if _resolve_local_video_path(local_video):
-            local_stream_url = _video_local_stream_path(body.video_id)
+    local_video = _find_video_for_player(db, body.video_id, body.url)
+    if _resolve_local_video_path(local_video) and local_video:
+        local_stream_url = _video_local_stream_path(local_video.video_id)
 
     if local_stream_url and local_video:
         embed_url = _bilibili_embed_url(body.url)
@@ -522,7 +575,7 @@ async def stream_local_video_media(
     db: Session = Depends(get_db),
 ):
     """播放已下载到本地的视频文件，支持 Range 拖动。"""
-    video = db.query(Video).filter(Video.video_id == video_id).first()
+    video = _find_video_for_player(db, video_id, None)
     path = _resolve_local_video_path(video)
     if not path:
         raise HTTPException(status_code=404, detail="本地视频文件不存在")

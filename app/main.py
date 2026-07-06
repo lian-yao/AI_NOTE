@@ -2,13 +2,19 @@
 FastAPI 应用入口
 """
 import base64
+import sys
 import time
 import os
+import asyncio
 import urllib.parse
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+
+# Windows 必须使用 ProactorEventLoop 才能支持 asyncio.subprocess 的管道
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from app.core.config import settings
 from app.core.logger import setup_logger, log_requests
@@ -28,7 +34,6 @@ logger = setup_logger(settings.data_dir)
 
 def _forward_to_ws(event: PipelineEvent):
     """将流水线事件通过 WebSocket 推送给前端。"""
-    import asyncio
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -135,4 +140,6 @@ async def image_proxy(url: str = Query(..., min_length=1)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # loop="asyncio" 让 uvicorn 使用 Python 默认事件循环策略，
+    # 而非 Windows 上硬编码 SelectorEventLoop（不支持子进程管道）
+    uvicorn.run(app, host="127.0.0.1", port=8000, loop="asyncio")

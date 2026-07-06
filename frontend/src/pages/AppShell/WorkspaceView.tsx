@@ -1179,6 +1179,14 @@ function nestedValueFromRecord(value: unknown, parentKey: string, childKey: stri
   return typeof item === 'string' ? item : ''
 }
 
+function extractBvid(value: string): string {
+  return value.match(/BV[0-9A-Za-z]{10}/)?.[0] || ''
+}
+
+function isBackendVideoId(value: string): boolean {
+  return /^b_BV[0-9A-Za-z]{10}$/.test(value) || /^av_\d+$/.test(value)
+}
+
 function getTaskSourceUrl(task: Task | null): string {
   if (!task) return ''
   return (
@@ -1193,7 +1201,25 @@ function getTaskSourceUrl(task: Task | null): string {
 
 function getTaskVideoId(task: Task | null): string {
   if (!task) return ''
-  return task.audioMeta?.video_id || task.id || ''
+  const rawInfo = task.audioMeta?.raw_info
+  const candidates = [
+    task.audioMeta?.video_id,
+    valueFromRecord(rawInfo, 'video_id'),
+    nestedValueFromRecord(rawInfo, 'backend_video', 'video_id'),
+    task.id,
+  ].filter(Boolean) as string[]
+
+  for (const candidate of candidates) {
+    if (isBackendVideoId(candidate)) return candidate
+  }
+
+  for (const candidate of candidates) {
+    const bvid = extractBvid(candidate)
+    if (bvid) return `b_${bvid}`
+  }
+
+  const bvid = getTaskBvid(task)
+  return bvid ? `b_${bvid}` : ''
 }
 
 function getTaskBvid(task: Task | null): string {
@@ -1202,7 +1228,7 @@ function getTaskBvid(task: Task | null): string {
   return (
     valueFromRecord(task.audioMeta?.raw_info, 'bvid') ||
     nestedValueFromRecord(task.audioMeta?.raw_info, 'backend_video', 'bvid') ||
-    sourceUrl.match(/BV[0-9A-Za-z]{10}/)?.[0] ||
+    extractBvid(sourceUrl) ||
     ''
   )
 }

@@ -1,5 +1,6 @@
 """
 音频提取器：使用 ffmpeg 从视频中提取音频（16kHz, mono, WAV）。
+改用同步 subprocess + to_thread 以兼容 Windows SelectorEventLoop。
 """
 from __future__ import annotations
 
@@ -128,10 +129,8 @@ async def extract_audio(
     # 1. 找到视频文件
     video_path: str | None = None
     for ext in (".mp4", ".mkv", ".flv", ".webm", ".avi"):
-        # 先按 meta.json 中的视频路径找，再扫描目录
         candidates = list(video_dir_path.glob(f"*{ext}"))
         if candidates:
-            # 找最大的文件（很可能是视频）
             video_path = str(max(candidates, key=lambda p: p.stat().st_size))
             break
 

@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from app.core.database import SessionLocal
 from app.core.paths import project_path
+from app.core.logger import logger
 from app.models.chunk import Chunk
 from app.models.video import Video
 from app.models.note import Note
@@ -206,7 +207,7 @@ class PipelineOrchestrator:
             from app.retriever.hybrid import HybridRetriever
             self.retriever = HybridRetriever(self.vector_store)
         else:
-            self.retriever = MockRetriever(self.store)
+            self.retriever = MockRetriever(self.vector_store)
 
         # ── QAEngine: 有真实 Retriever 则用真实 QA ──
         if qa:
@@ -339,6 +340,7 @@ class PipelineOrchestrator:
                 self._emit(PipelineEvent(event="completed", task_id=task.task_id, video_id=task.video_id or "", stage="", status="completed", progress=100, message="处理完成"))
                 db.commit()
             except TaskCancelledError:
+                logger.warning(f"任务 {task.task_id} 被取消")
                 pass
             except asyncio.CancelledError:
                 task.status = TaskStatus.CANCELLED
@@ -354,6 +356,8 @@ class PipelineOrchestrator:
             except Exception as e:
                 task.status = TaskStatus.FAILED
                 task.error = str(e) or f"{type(e).__name__}: {e!r}"
+                stage_name = task.current_stage.label() if task.current_stage else "未知"
+                logger.exception(f"任务 {task.task_id} 在阶段 [{stage_name}] 失败: {e}")
                 db.rollback()
                 try:
                     if task.video_id:
@@ -454,6 +458,24 @@ class PipelineOrchestrator:
             # 保存转写结果到 task.options，供 GENERATE 阶段使用
             full_text = transcribe_result.metadata.get("full_text", "")
             task.options["transcript_text"] = full_text
+
+            # 读取 transcription.json 中的分段数据，供前端展示
+            import json
+            from pathlib import Path as _Path
+            trans_json_path = transcribe_result.artifacts.get("transcript_json", "")
+            if trans_json_path:
+                try:
+                    tj_data = json.loads(_Path(trans_json_path).read_text(encoding="utf-8"))
+                    segments = tj_data.get("segments", [])
+                    language = tj_data.get("language", "zh-CN")
+                    task.options["transcript_data"] = {
+                        "full_text": full_text,
+                        "language": language,
+                        "raw": None,
+                        "segments": [{"start": s["start"], "end": s["end"], "text": s["text"]} for s in segments],
+                    }
+                except Exception:
+                    pass
 
             if task.video_id:
                 video = db.query(Video).filter(Video.video_id == task.video_id).first()
@@ -588,13 +610,13 @@ class PipelineOrchestrator:
                 elif status == "failed":
                     t.error_message = error_message
             db.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"同步任务模型失败 ({task.task_id}_{stage.value}): {e}")
 
     def _emit(self, event: PipelineEvent) -> None:
         "将事件分发到所有已注册的回调。"
         for cb in self._progress_callbacks:
             try:
                 cb(event)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"事件回调异常 ({event.event}/{event.task_id}): {e}")
