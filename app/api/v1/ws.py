@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from loguru import logger
 from app.pipeline.orchestrator import PipelineEvent
 
 router = APIRouter(prefix="/ws", tags=["ws"])
@@ -50,8 +51,8 @@ class ConnectionManager:
                         "message": event.message,
                     },
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"WebSocket 发送失败 ({task_id}): {e}")
 
 
 manager = ConnectionManager()

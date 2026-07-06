@@ -1,11 +1,17 @@
 """
 FastAPI 应用入口
 """
+import sys
 import time
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Windows 必须使用 ProactorEventLoop 才能支持 asyncio.subprocess 的管道
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from app.core.config import settings
 from app.core.logger import setup_logger, log_requests
@@ -25,11 +31,11 @@ logger = setup_logger(settings.data_dir)
 
 def _forward_to_ws(event: PipelineEvent):
     """将流水线事件通过 WebSocket 推送给前端。"""
-    import asyncio
     try:
-        asyncio.create_task(ws_manager.broadcast(event.task_id, event))
+        loop = asyncio.get_running_loop()
     except RuntimeError:
-        pass  # 没有事件循环时静默忽略
+        return  # 没有事件循环，忽略推送
+    asyncio.create_task(ws_manager.broadcast(event.task_id, event))
 
 
 @asynccontextmanager
@@ -73,6 +79,44 @@ app.add_middleware(
 )
 
 
+@app.get("/image_proxy")
+async def image_proxy(url: str):
+    """代理外部图片（B 站封面等），绕过 Referer/CORS 限制。"""
+    import urllib.request
+    from fastapi.responses import Response
+
+    if not url.startswith(("http://", "https://")):
+        return Response(status_code=400, content="Invalid URL")
+
+    def _fetch() -> tuple[bytes, str]:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://www.bilibili.com/",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            body = resp.read(8 * 1024 * 1024 + 1)
+            if len(body) > 8 * 1024 * 1024:
+                raise ValueError("Image too large")
+            return body, resp.headers.get_content_type() or "image/jpeg"
+
+    try:
+        content, media_type = await asyncio.to_thread(_fetch)
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    except Exception:
+        return Response(status_code=502, content="Proxy failed")
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": "0.1.0"}
@@ -80,4 +124,6 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # loop="asyncio" 让 uvicorn 使用 Python 默认事件循环策略，
+    # 而非 Windows 上硬编码 SelectorEventLoop（不支持子进程管道）
+    uvicorn.run(app, host="127.0.0.1", port=8000, loop="asyncio")

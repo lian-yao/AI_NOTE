@@ -41,9 +41,9 @@ export const useTaskPolling = (interval = 3000, enabled = true) => {
               toast.success('笔记生成成功')
               updateTaskContent(task.id, {
                 status,
-                markdown,
-                transcript,
-                audioMeta: audio_meta,
+                ...(markdown !== undefined ? { markdown } : {}),
+                ...(transcript !== undefined ? { transcript } : {}),
+                ...(audio_meta !== undefined ? { audioMeta: audio_meta } : {}),
               })
             } else if (status === 'FAILED') {
               updateTaskContent(task.id, { status })

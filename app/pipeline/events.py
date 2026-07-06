@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from loguru import logger
+
 from app.pipeline.orchestrator import PipelineEvent
 
 # 事件处理器类型：接收 PipelineEvent 并返回 None
@@ -35,10 +37,10 @@ class EventBus:
         for handler in self._all_handlers:
             try:
                 handler(event)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"事件总线全局处理器异常 ({event.event}/{event.task_id}): {e}")
         for handler in self._handlers.get(event.event, []):
             try:
                 handler(event)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"事件总线处理器异常 ({event.event}/{event.task_id}): {e}")
