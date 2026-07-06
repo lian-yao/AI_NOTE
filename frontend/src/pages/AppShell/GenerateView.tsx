@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react'
 import {
   ChevronDown,
   ExternalLink,
@@ -79,6 +79,73 @@ function audioMetaFromParsed(
 
 function extractBvid(value: string): string {
   return value.match(/BV[0-9A-Za-z]+/)?.[0] || ''
+}
+
+const VIDEO_URL_PATTERN =
+  /(?:https?:\/\/|www\.|b23\.tv\/|(?:[\w-]+\.)?bilibili\.com\/)[^\s<>"'`|\\\u3000-\u303f\uff00-\uff65]+/gi
+const BILIBILI_ID_PATTERN = /\b(?:BV[0-9A-Za-z]{10}|av\d+)\b/gi
+
+function normalizeVideoUrlCandidate(candidate: string): string | null {
+  const trimmed = candidate
+    .trim()
+    .replace(/^[<>"'`([{]+/, '')
+    .replace(/[<>"'`)\]}.,;:!]+$/g, '')
+
+  if (!trimmed) return null
+
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+
+  try {
+    const url = new URL(withProtocol)
+    const host = url.hostname.toLowerCase()
+    const supportedHost =
+      host === 'b23.tv' || host === 'bilibili.com' || host.endsWith('.bilibili.com')
+
+    return supportedHost ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+function extractVideoIdentity(value: string): string {
+  const bvid = value.match(/BV[0-9A-Za-z]{10}/i)?.[0]
+  if (bvid) return bvid.toUpperCase()
+
+  const avid = value.match(/\bav(\d+)\b/i)?.[1]
+  return avid ? `av${avid}` : ''
+}
+
+function videoUrlDedupeKey(value: string): string {
+  const identity = extractVideoIdentity(value)
+  if (!identity) return value.toLowerCase()
+
+  try {
+    const url = new URL(value)
+    const page = url.searchParams.get('p') || '1'
+    return `${identity}:p=${page}`
+  } catch {
+    return identity
+  }
+}
+
+function extractVideoUrls(value: string): string[] {
+  const urlCandidates = value.match(VIDEO_URL_PATTERN) || []
+  const idCandidates = Array.from(value.matchAll(BILIBILI_ID_PATTERN), match =>
+    `https://www.bilibili.com/video/${match[0]}`,
+  )
+  const seen = new Set<string>()
+
+  return [...urlCandidates, ...idCandidates].reduce<string[]>((urls, candidate) => {
+    const normalizedUrl = normalizeVideoUrlCandidate(candidate)
+    if (!normalizedUrl) return urls
+
+    const dedupeKey = videoUrlDedupeKey(normalizedUrl)
+    if (seen.has(dedupeKey)) return urls
+
+    seen.add(dedupeKey)
+    urls.push(normalizedUrl)
+    return urls
+  }, [])
 }
 
 function rawInfoBvid(rawInfo: unknown): string {
@@ -413,9 +480,9 @@ export default function GenerateView({
   )
 
   const submitUrl = async (url: string, platform = 'bilibili') => {
-    const targetUrl = url.trim()
+    const targetUrl = platform === 'bilibili' ? extractVideoUrls(url)[0] || '' : url.trim()
     if (!targetUrl) {
-      toast.error('请输入视频链接')
+      toast.error('请输入有效的 Bilibili 视频链接')
       return
     }
 
@@ -518,16 +585,14 @@ export default function GenerateView({
 
   const handleSubmit = async () => {
     if (activeTab === 'batch') {
-      const urls = batchUrls
-        .split(/[\n,，]+/)
-        .map(item => item.trim())
-        .filter(Boolean)
+      const urls = extractVideoUrls(batchUrls)
 
       if (urls.length === 0) {
-        toast.error('请输入至少一个视频链接')
+        toast.error('请输入至少一个有效的 Bilibili 视频链接')
         return
       }
 
+      setBatchUrls(urls.join('\n'))
       await submitUrl(urls[0])
       if (urls.length > 1) {
         toast('Demo 阶段先提交第一条链接，其余链接稍后接入批量队列。')
@@ -535,7 +600,25 @@ export default function GenerateView({
       return
     }
 
-    await submitUrl(singleUrl)
+    const targetUrl = extractVideoUrls(singleUrl)[0] || ''
+    if (targetUrl) setSingleUrl(targetUrl)
+    await submitUrl(targetUrl || singleUrl)
+  }
+
+  const handleSingleUrlPaste = (event: ClipboardEvent<HTMLInputElement>) => {
+    const targetUrl = extractVideoUrls(event.clipboardData.getData('text'))[0]
+    if (!targetUrl) return
+
+    event.preventDefault()
+    setSingleUrl(targetUrl)
+  }
+
+  const handleBatchUrlsPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pastedUrls = extractVideoUrls(event.clipboardData.getData('text'))
+    if (pastedUrls.length === 0) return
+
+    event.preventDefault()
+    setBatchUrls(extractVideoUrls(`${batchUrls}\n${pastedUrls.join('\n')}`).join('\n'))
   }
 
   const handleFileUpload = async (file: File) => {
@@ -708,6 +791,7 @@ export default function GenerateView({
                 type="text"
                 value={singleUrl}
                 onChange={event => setSingleUrl(event.target.value)}
+                onPaste={handleSingleUrlPaste}
                 placeholder="https://www.bilibili.com/video/..."
                 className="h-12 w-full rounded-xl border border-neutral-800 bg-[#141414] px-4 text-sm text-neutral-200 transition-colors placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
               />
@@ -740,6 +824,7 @@ export default function GenerateView({
               <textarea
                 value={batchUrls}
                 onChange={event => setBatchUrls(event.target.value)}
+                onPaste={handleBatchUrlsPaste}
                 className="min-h-[160px] w-full resize-none rounded-xl border border-neutral-800 bg-[#141414] p-4 text-sm text-neutral-200 transition-colors placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
                 placeholder="每行一个 Bilibili 视频链接"
               />
