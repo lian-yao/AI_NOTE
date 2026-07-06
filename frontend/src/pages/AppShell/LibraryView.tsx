@@ -38,7 +38,7 @@ function loadJson<T>(key: string, fallback: T): T {
 
 function normalizeVideoStatus(status: string): Task['status'] {
   const value = status.toLowerCase()
-  if (value === 'completed' || value === 'success') return 'SUCCESS'
+  if (value === 'completed' || value === 'success' || value === 'stored') return 'SUCCESS'
   if (value === 'failed') return 'FAILED'
   if (value === 'pending') return 'PENDING'
   if (value === 'downloading') return 'DOWNLOADING'
@@ -132,7 +132,12 @@ function backendVideoToTask(
 }
 
 function findExistingVideoTask(video: VideoItem, tasks: Task[]): Task | undefined {
-  return tasks.find(task => task.id === video.video_id || task.audioMeta?.video_id === video.video_id)
+  return tasks.find(task =>
+    task.id === video.video_id ||
+    task.audioMeta?.video_id === video.video_id ||
+    task.formData?.video_url === video.url ||
+    task.formData?.video_url === video.source_url
+  )
 }
 
 function latestTaskId(video: VideoItem): string | null {
@@ -226,7 +231,7 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
             const existingTask = findExistingVideoTask(video, currentTasks)
             const taskResult = await loadBackendTaskResult(video)
             const markdown =
-              video.status === 'completed'
+              video.status === 'completed' || video.status === 'stored'
                 ? await getNoteRaw(video.video_id, { silent: true }).catch(() => '')
                 : ''
             const task = backendVideoToTask(video, markdown, {
@@ -234,7 +239,20 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
               result: taskResult.result,
               status: taskResult.status,
             })
-            if (!cancelled) upsertTask(mergeBackendTask(existingTask, task))
+            if (!cancelled) {
+              upsertTask(mergeBackendTask(existingTask, task))
+              // 移除重复任务（同一视频但 ID 不同的旧任务）
+              const state = useTaskStore.getState()
+              const duplicates = state.tasks.filter(t =>
+                t.id !== task.id &&
+                (t.audioMeta?.video_id === task.audioMeta?.video_id ||
+                 t.formData?.video_url === task.formData?.video_url) &&
+                t.formData?.video_url
+              )
+              for (const dup of duplicates) {
+                state.removeTask(dup.id)
+              }
+            }
           }),
         )
       } catch {
