@@ -42,7 +42,7 @@ const request: AxiosInstance = axios.create({
 })
 
 request.interceptors.response.use(
-  (response: AxiosResponse<IResponse>): any => {
+  (response: AxiosResponse<IResponse>): unknown => {
     const res = response.data
 
     if (!res || typeof res.code !== 'number') {
@@ -58,10 +58,9 @@ request.interceptors.response.use(
     }
     return Promise.reject(res)
   },
-  (error) => {
+  error => {
     const status = error?.response?.status
-    const suppressNotFoundToast =
-      status === 404 && error?.config?.suppressNotFoundToast === true
+    const suppressNotFoundToast = status === 404 && error?.config?.suppressNotFoundToast === true
     const suppress = error?.config?.suppressToast === true || suppressNotFoundToast
     const res = error?.response?.data as Partial<IResponse> | undefined
 
@@ -81,7 +80,7 @@ request.interceptors.response.use(
       message: '请求失败，请检查网络连接',
       data: null,
     } as IResponse)
-  },
+  }
 )
 
 export default request

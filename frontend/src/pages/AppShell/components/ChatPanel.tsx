@@ -1,13 +1,30 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Trash2, ChevronDown, ChevronUp, BookOpen, UserRound, Bot, Maximize2, Minimize2, SendHorizontal } from 'lucide-react'
+import {
+  Loader2,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  BookOpen,
+  UserRound,
+  Bot,
+  Maximize2,
+  Minimize2,
+  SendHorizontal,
+} from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { useChatStore } from '@/store/chatStore'
 import { useTaskStore } from '@/store/taskStore'
-import { askQuestion, getChatStatus, indexTask, type ChatSource, type IndexStatus } from '@/services/chat'
+import {
+  askQuestion,
+  getChatStatus,
+  indexTask,
+  type ChatSource,
+  type IndexStatus,
+} from '@/services/chat'
 
 type ChatMode = 'half' | 'full'
 
@@ -15,6 +32,9 @@ interface ChatPanelProps {
   taskId: string
   mode: ChatMode
   onModeChange: (mode: ChatMode) => void
+  title?: string
+  headerActions?: ReactNode
+  showModeToggle?: boolean
 }
 
 function SourceBadges({ sources }: { sources: ChatSource[] }) {
@@ -26,7 +46,7 @@ function SourceBadges({ sources }: { sources: ChatSource[] }) {
     <div className="mt-1.5">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 text-xs text-neutral-400 hover:text-neutral-600"
+        className="flex items-center gap-1 text-xs text-neutral-500 transition-colors hover:text-neutral-300"
       >
         <BookOpen className="h-3 w-3" />
         <span>引用来源 ({sources.length})</span>
@@ -35,7 +55,11 @@ function SourceBadges({ sources }: { sources: ChatSource[] }) {
       {expanded && (
         <div className="mt-1 flex flex-wrap gap-1">
           {sources.map((s, i) => (
-            <Badge key={i} variant="outline" className="text-xs font-normal">
+            <Badge
+              key={i}
+              variant="outline"
+              className="border-neutral-700 bg-neutral-900/60 text-xs font-normal text-neutral-300"
+            >
               {s.source_type === 'markdown'
                 ? s.section_title || '笔记'
                 : `${(s.start_time ?? 0).toFixed(0)}s ~ ${(s.end_time ?? 0).toFixed(0)}s`}
@@ -47,7 +71,14 @@ function SourceBadges({ sources }: { sources: ChatSource[] }) {
   )
 }
 
-export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps) {
+export default function ChatPanel({
+  taskId,
+  mode,
+  onModeChange,
+  title = 'AI 问答',
+  headerActions,
+  showModeToggle = true,
+}: ChatPanelProps) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null)
@@ -57,23 +88,20 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
     () =>
       Array.isArray(rawMessages)
         ? rawMessages
-          .filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant'))
-          .map(msg => ({
-            ...msg,
-            content: typeof msg.content === 'string' ? msg.content : String(msg.content ?? ''),
-            sources: Array.isArray(msg.sources) ? msg.sources : undefined,
-          }))
+            .filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant'))
+            .map(msg => ({
+              ...msg,
+              content: typeof msg.content === 'string' ? msg.content : String(msg.content ?? ''),
+              sources: Array.isArray(msg.sources) ? msg.sources : undefined,
+            }))
         : [],
-    [rawMessages],
+    [rawMessages]
   )
   const addMessage = useChatStore(state => state.addMessage)
   const clearChat = useChatStore(state => state.clearChat)
 
   const tasks = useTaskStore(state => state.tasks)
-  const currentTask = useMemo(
-    () => tasks.find(t => t.id === taskId) ?? null,
-    [tasks, taskId],
-  )
+  const currentTask = useMemo(() => tasks.find(t => t.id === taskId) ?? null, [tasks, taskId])
   const videoId = currentTask?.audioMeta?.video_id
 
   // 检查索引状态，未索引时自动触发，indexing 时轮询
@@ -147,16 +175,18 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
         setLoading(false)
       }
     },
-    [loading, taskId, currentTask, videoId, messages, addMessage],
+    [loading, taskId, currentTask, videoId, messages, addMessage]
   )
 
   if (indexStatus === null || indexStatus === 'indexing' || indexStatus === 'idle') {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-neutral-400">
-        <Loader2 className="h-6 w-6 animate-spin" />
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-[#151515] text-neutral-400">
+        <Loader2 className="text-primary h-6 w-6 animate-spin" />
         <div className="text-center">
-          <p className="text-sm font-medium">正在索引笔记内容...</p>
-          <p className="mt-1 text-xs">首次使用需下载 Embedding 模型（约 80MB），请耐心等待</p>
+          <p className="text-sm font-medium text-neutral-200">正在索引笔记内容...</p>
+          <p className="mt-1 text-xs text-neutral-500">
+            首次使用需下载 Embedding 模型（约 80MB），请耐心等待
+          </p>
         </div>
       </div>
     )
@@ -164,11 +194,10 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
 
   if (indexStatus === 'failed') {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-neutral-400">
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-[#151515] text-neutral-400">
         <span className="text-sm">索引失败，请重试</span>
-        <Button
-          size="sm"
-          variant="outline"
+        <button
+          type="button"
           onClick={async () => {
             setIndexStatus('indexing')
             try {
@@ -178,38 +207,46 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
               setIndexStatus('failed')
             }
           }}
+          className="rounded-md border border-neutral-700 bg-[#1D1D1F] px-3 py-1.5 text-xs font-medium text-neutral-200 transition-colors hover:border-neutral-600 hover:bg-[#242428]"
         >
           重新索引
-        </Button>
+        </button>
       </div>
     )
   }
 
   return (
-    <div className="flex h-full flex-col border-l">
+    <div className="flex h-full flex-col overflow-hidden bg-[#151515]">
       {/* 头部 */}
-      <div className="flex items-center justify-between border-b px-3 py-2">
-        <span className="text-sm font-medium">AI 问答</span>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-neutral-400 hover:text-neutral-600"
-            onClick={() => onModeChange(mode === 'half' ? 'full' : 'half')}
-            title={mode === 'half' ? '全屏' : '半屏'}
-          >
-            {mode === 'half' ? (
-              <Maximize2 className="h-3.5 w-3.5" />
-            ) : (
-              <Minimize2 className="h-3.5 w-3.5" />
-            )}
-          </Button>
+      <div className="flex h-11 shrink-0 items-center justify-between border-b border-neutral-800/90 bg-[#171719] px-3">
+        <span className="flex items-center gap-2 text-sm font-medium text-neutral-200">
+          <Bot className="text-primary h-4 w-4" />
+          {title}
+        </span>
+        <div className="flex items-center gap-1.5">
+          {headerActions}
+          {showModeToggle && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+              onClick={() => onModeChange(mode === 'half' ? 'full' : 'half')}
+              title={mode === 'half' ? '全屏' : '半屏'}
+            >
+              {mode === 'half' ? (
+                <Maximize2 className="h-3.5 w-3.5" />
+              ) : (
+                <Minimize2 className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          )}
           {messages.length > 0 && (
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 px-2 text-neutral-400 hover:text-red-500"
+              className="h-7 px-2 text-neutral-500 hover:bg-red-500/10 hover:text-red-400"
               onClick={() => clearChat(taskId)}
+              title="清空对话"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
@@ -218,12 +255,15 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
       </div>
 
       {/* 消息列表 */}
-      <div className="custom-scrollbar flex-1 overflow-y-auto p-3">
+      <div className="custom-scrollbar flex-1 overflow-y-auto bg-[#151515] p-4">
         {messages.length === 0 && !loading ? (
           <div className="flex h-full items-center justify-center text-center text-sm text-neutral-400">
             <div>
-              <p>针对笔记内容提问</p>
-              <p className="mt-1 text-xs">例如：这个视频的核心观点是什么？</p>
+              <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-neutral-800 bg-[#1D1D1F]">
+                <Bot className="text-primary h-5 w-5" />
+              </div>
+              <p className="font-medium text-neutral-200">针对笔记内容提问</p>
+              <p className="mt-1 text-xs text-neutral-500">例如：这个视频的核心观点是什么？</p>
             </div>
           </div>
         ) : (
@@ -236,24 +276,22 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
                   className={`flex gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}
                 >
                   {!isUser && (
-                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-neutral-600 text-white">
+                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-neutral-700 bg-[#222225] text-neutral-200">
                       <Bot className="h-4 w-4" />
                     </div>
                   )}
                   <div
                     className={`max-w-[82%] rounded-xl px-3 py-2 text-sm ${
                       isUser
-                        ? 'bg-blue-500 text-white'
-                        : 'border border-neutral-700 bg-[#202020] text-neutral-200'
+                        ? 'bg-primary text-white'
+                        : 'border border-neutral-800 bg-[#202024] text-neutral-200 shadow-sm'
                     }`}
                   >
                     {isUser ? (
-                      <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+                      <p className="break-words whitespace-pre-wrap">{msg.content}</p>
                     ) : (
-                      <div className="markdown-body prose prose-sm max-w-none prose-invert prose-p:my-1 prose-li:my-0.5 prose-headings:my-2">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {msg.content}
-                        </ReactMarkdown>
+                      <div className="markdown-body prose prose-sm prose-invert prose-headings:my-2 prose-p:my-1 prose-li:my-0.5 max-w-none">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                       </div>
                     )}
                     {msg.role === 'assistant' && Array.isArray(msg.sources) && (
@@ -261,7 +299,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
                     )}
                   </div>
                   {isUser && (
-                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500 text-white">
+                    <div className="bg-primary mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white">
                       <UserRound className="h-4 w-4" />
                     </div>
                   )}
@@ -270,7 +308,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
             })}
             {loading && (
               <div className="flex items-center gap-2 text-sm text-neutral-400">
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="text-primary h-4 w-4 animate-spin" />
                 思考中...
               </div>
             )}
@@ -280,7 +318,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
 
       {/* 输入区域 */}
       <form
-        className="flex shrink-0 gap-2 border-t p-3"
+        className="flex shrink-0 gap-2 border-t border-neutral-800/90 bg-[#171719] p-3"
         onSubmit={event => {
           event.preventDefault()
           void handleSend(input)
@@ -297,10 +335,19 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
           }}
           rows={1}
           placeholder="输入你的问题..."
-          className="min-h-10 flex-1 resize-none rounded-lg border border-neutral-700 bg-[#111111] px-3 py-2 text-sm text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-neutral-500"
+          className="focus:border-primary/70 focus:ring-primary/20 min-h-10 flex-1 resize-none rounded-lg border border-neutral-800 bg-[#0F0F11] px-3 py-2 text-sm text-neutral-200 transition-colors outline-none placeholder:text-neutral-500 focus:ring-2"
         />
-        <Button type="submit" size="sm" disabled={loading || !input.trim()} className="h-10">
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+        <Button
+          type="submit"
+          size="sm"
+          disabled={loading || !input.trim()}
+          className="h-10 rounded-lg"
+        >
+          {loading ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <SendHorizontal className="h-4 w-4" />
+          )}
         </Button>
       </form>
     </div>
