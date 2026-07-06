@@ -17,6 +17,7 @@ import {
   Plus,
   RefreshCcw,
   Save,
+  Search,
   Server,
   Settings2,
   Trash2,
@@ -1061,59 +1062,109 @@ function ModelTable({
   onToggleModel: (providerId: string, modelName: string) => void
   showDimension?: boolean
 }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const [searchText, setSearchText] = useState('')
   const enabledSet = new Set(enabledModels.map(model => model.model_name))
+  const normalizedSearchText = searchText.trim().toLowerCase()
+  const filteredModels = useMemo(() => {
+    if (!normalizedSearchText) return models
+
+    return models.filter(model => {
+      const fields = [
+        model.id,
+        model.displayName,
+        model.dimension === undefined ? '' : String(model.dimension),
+      ]
+      return fields.some(field => field.toLowerCase().includes(normalizedSearchText))
+    })
+  }, [models, normalizedSearchText])
+  const emptyResultText = searchText.trim() ? '没有匹配的模型' : emptyText
 
   return (
     <div className="mb-5 last:mb-0">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-neutral-100">{title}</h3>
-      </div>
-      <div className="overflow-hidden rounded-lg border border-neutral-800">
-        <div
-          className={`grid bg-[#101010] px-3 py-2 text-xs text-neutral-500 ${
-            showDimension ? 'grid-cols-[minmax(0,1fr)_160px_112px]' : 'grid-cols-[minmax(0,1fr)_112px]'
-          }`}
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setCollapsed(value => !value)}
+          className="inline-flex min-w-0 items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-neutral-800/80"
+          aria-expanded={!collapsed}
         >
-          <span>Model (calling ID)</span>
-          {showDimension && <span>Dimension</span>}
-          <span className="text-center">Enable</span>
-        </div>
-        {models.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs text-neutral-500">{emptyText}</div>
-        ) : (
-          models.map(model => {
-            const enabled = enabledSet.has(model.id)
-            const toggleKey = `${providerId}:${model.id}`
-
-            return (
-              <div
-                key={model.id}
-                className={`grid items-center border-t border-neutral-800 px-3 py-2 text-sm ${
-                  showDimension ? 'grid-cols-[minmax(0,1fr)_160px_112px]' : 'grid-cols-[minmax(0,1fr)_112px]'
-                }`}
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-neutral-100">{model.displayName}</div>
-                  {model.displayName !== model.id && (
-                    <div className="mt-0.5 truncate text-xs text-neutral-500">{model.id}</div>
-                  )}
-                </div>
-                {showDimension && (
-                  <span className="text-xs text-neutral-400">{model.dimension || '-'}</span>
-                )}
-                <div className="flex items-center justify-center">
-                  <IconSwitch
-                    checked={enabled}
-                    disabled={togglingModelKey === toggleKey}
-                    label={enabled ? '禁用模型' : '启用模型'}
-                    onClick={() => onToggleModel(providerId, model.id)}
-                  />
-                </div>
-              </div>
-            )
-          })
+          {collapsed ? (
+            <ChevronRight size={16} className="shrink-0 text-neutral-500" />
+          ) : (
+            <ChevronDown size={16} className="shrink-0 text-neutral-500" />
+          )}
+          <span className="truncate text-sm font-semibold text-neutral-100">{title}</span>
+          <span className="rounded-full border border-neutral-700/80 bg-neutral-800/80 px-2 py-0.5 text-[11px] text-neutral-400">
+            {searchText.trim() ? `${filteredModels.length}/${models.length}` : models.length}
+          </span>
+        </button>
+        {!collapsed && models.length > 0 && (
+          <div className="relative w-full sm:w-64">
+            <Search
+              size={14}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-600"
+            />
+            <input
+              type="search"
+              value={searchText}
+              onChange={event => setSearchText(event.target.value)}
+              placeholder="搜索模型"
+              className="h-8 w-full rounded-lg border border-neutral-800 bg-[#101010] pl-8 pr-3 text-xs text-neutral-200 outline-none transition-colors placeholder:text-neutral-600 focus:border-neutral-600"
+            />
+          </div>
         )}
       </div>
+      {!collapsed && (
+        <div className="overflow-hidden rounded-lg border border-neutral-800">
+          <div
+            className={`grid bg-[#101010] px-3 py-2 text-xs text-neutral-500 ${
+              showDimension ? 'grid-cols-[minmax(0,1fr)_160px_112px]' : 'grid-cols-[minmax(0,1fr)_112px]'
+            }`}
+          >
+            <span>Model (calling ID)</span>
+            {showDimension && <span>Dimension</span>}
+            <span className="text-center">Enable</span>
+          </div>
+          {filteredModels.length === 0 ? (
+            <div className="px-3 py-6 text-center text-xs text-neutral-500">{emptyResultText}</div>
+          ) : (
+            <div className="max-h-80 overflow-y-auto">
+              {filteredModels.map(model => {
+                const enabled = enabledSet.has(model.id)
+                const toggleKey = `${providerId}:${model.id}`
+
+                return (
+                  <div
+                    key={model.id}
+                    className={`grid items-center border-t border-neutral-800 px-3 py-2 text-sm ${
+                      showDimension ? 'grid-cols-[minmax(0,1fr)_160px_112px]' : 'grid-cols-[minmax(0,1fr)_112px]'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-neutral-100">{model.displayName}</div>
+                      {model.displayName !== model.id && (
+                        <div className="mt-0.5 truncate text-xs text-neutral-500">{model.id}</div>
+                      )}
+                    </div>
+                    {showDimension && (
+                      <span className="text-xs text-neutral-400">{model.dimension || '-'}</span>
+                    )}
+                    <div className="flex items-center justify-center">
+                      <IconSwitch
+                        checked={enabled}
+                        disabled={togglingModelKey === toggleKey}
+                        label={enabled ? '禁用模型' : '启用模型'}
+                        onClick={() => onToggleModel(providerId, model.id)}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
