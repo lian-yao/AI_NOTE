@@ -1,10 +1,18 @@
 """视频管理 API：解析、列表、详情、删除。"""
+from __future__ import annotations
+
+import asyncio
+import time
+from urllib.parse import quote
+from urllib.parse import urlparse
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from pathlib import Path
-import asyncio
 
 from app.core.database import get_db
 from app.models.video import Video
@@ -33,6 +41,25 @@ class VideoParseRequest(BaseModel):
     url: str
 
 
+class VideoPlayerRequest(BaseModel):
+    url: str
+    quality: str = "1080p"
+
+
+class VideoPlayerResponse(BaseModel):
+    title: str
+    source_url: str
+    webpage_url: str | None = None
+    stream_url: str | None = None
+    embed_url: str | None = None
+    cover_url: str | None = None
+    duration_seconds: int | None = None
+    format_id: str | None = None
+    ext: str | None = None
+    height: int | None = None
+    is_proxy_stream: bool = True
+
+
 class VideoProcessRequest(BaseModel):
     url: str
     quality: str = "1080p"
@@ -42,6 +69,182 @@ class VideoProcessRequest(BaseModel):
 
 def get_orchestrator(request: Request):
     return request.app.state.orchestrator
+
+
+_PLAYER_CACHE_TTL_SECONDS = 10 * 60
+_PLAYER_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _is_supported_bilibili_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return host.endswith("bilibili.com") or host.endswith("b23.tv")
+
+
+def _target_height(quality: str) -> int:
+    value = (quality or "").lower()
+    if "360" in value:
+        return 360
+    if "480" in value:
+        return 480
+    if "720" in value:
+        return 720
+    return 1080
+
+
+def _bilibili_embed_url(source_url: str, info: dict | None = None) -> str | None:
+    import re
+
+    bvid = None
+    if info:
+        bvid = info.get("id") or info.get("display_id")
+        if not (isinstance(bvid, str) and bvid.startswith("BV")):
+            bvid = None
+
+    if not bvid:
+        match = re.search(r"BV[0-9A-Za-z]{10}", source_url)
+        bvid = match.group(0) if match else None
+
+    if not bvid:
+        return None
+
+    return (
+        "https://player.bilibili.com/player.html"
+        f"?bvid={quote(bvid)}&page=1&high_quality=1&autoplay=0"
+    )
+
+
+def _is_progressive_browser_format(fmt: dict) -> bool:
+    url = fmt.get("url")
+    ext = str(fmt.get("ext") or "").lower()
+    protocol = str(fmt.get("protocol") or "").lower()
+    vcodec = fmt.get("vcodec")
+    acodec = fmt.get("acodec")
+
+    if not url or vcodec in (None, "none") or acodec in (None, "none"):
+        return False
+    if ext not in {"mp4", "m4v", "webm", "mov"}:
+        return False
+    return protocol in {"http", "https"} or protocol.startswith("http")
+
+
+def _choose_player_format(info: dict, quality: str) -> dict | None:
+    target = _target_height(quality)
+    formats = [fmt for fmt in info.get("formats") or [] if _is_progressive_browser_format(fmt)]
+    if not formats and _is_progressive_browser_format(info):
+        return info
+    if not formats:
+        return None
+
+    under_target = [fmt for fmt in formats if int(fmt.get("height") or 0) <= target]
+    pool = under_target or formats
+
+    return max(
+        pool,
+        key=lambda fmt: (
+            str(fmt.get("ext") or "").lower() == "mp4",
+            int(fmt.get("height") or 0),
+            float(fmt.get("tbr") or fmt.get("vbr") or 0),
+        ),
+    )
+
+
+def _extract_player_info_sync(source_url: str, quality: str) -> dict:
+    import yt_dlp
+
+    from app.core.cookie_store import get_cookie
+    from app.processor import build_cookie_opts, cleanup_temp_cookie, save_browser_cookies_to_cache
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": False,
+    }
+    opts.update(build_cookie_opts())
+
+    browser_cache_path = opts.pop("_browser_cache", None)
+    temp_cookie = opts.pop("_temp_cookie", False)
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(source_url, download=False)
+            if browser_cache_path and ydl.cookiejar:
+                try:
+                    save_browser_cookies_to_cache(browser_cache_path, ydl.cookiejar)
+                except Exception:
+                    pass
+    finally:
+        if temp_cookie:
+            cleanup_temp_cookie({"cookiefile": opts.get("cookiefile"), "_temp_cookie": True})
+
+    if not info:
+        raise HTTPException(status_code=400, detail="无法解析视频播放信息")
+
+    if info.get("_type") == "playlist" and info.get("entries"):
+        entries = [entry for entry in info.get("entries") or [] if entry]
+        if entries:
+            info = entries[0]
+
+    selected = _choose_player_format(info, quality)
+    embed_url = _bilibili_embed_url(source_url, info)
+    if not selected:
+        raise HTTPException(
+            status_code=409,
+            detail="B 站当前只返回分离音视频流，暂无法用内置播放器直连播放",
+        )
+
+    direct_url = selected.get("url")
+    if not direct_url:
+        raise HTTPException(status_code=400, detail="解析到的播放地址为空")
+
+    http_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        ),
+        "Referer": info.get("webpage_url") or source_url,
+        "Accept": "*/*",
+    }
+    for key, value in (info.get("http_headers") or {}).items():
+        if isinstance(value, str) and key.lower() not in {"cookie", "host"}:
+            http_headers[key] = value
+    for key, value in (selected.get("http_headers") or {}).items():
+        if isinstance(value, str) and key.lower() not in {"cookie", "host"}:
+            http_headers[key] = value
+
+    cookie = get_cookie("bilibili") or ""
+    if cookie:
+        http_headers["Cookie"] = cookie
+
+    return {
+        "title": info.get("title") or "Bilibili 视频",
+        "source_url": source_url,
+        "webpage_url": info.get("webpage_url") or source_url,
+        "direct_url": direct_url,
+        "embed_url": embed_url,
+        "cover_url": info.get("thumbnail") or None,
+        "duration_seconds": int(info["duration"]) if info.get("duration") else None,
+        "format_id": str(selected.get("format_id") or ""),
+        "ext": selected.get("ext"),
+        "height": int(selected["height"]) if selected.get("height") else None,
+        "http_headers": http_headers,
+    }
+
+
+async def _resolve_player_info(source_url: str, quality: str) -> dict:
+    if not _is_supported_bilibili_url(source_url):
+        raise HTTPException(status_code=400, detail="当前播放器仅支持 Bilibili 链接")
+
+    cache_key = f"{quality}:{source_url}"
+    cached = _PLAYER_CACHE.get(cache_key)
+    now = time.time()
+    if cached and cached[0] > now:
+        return cached[1]
+
+    loop = asyncio.get_running_loop()
+    info = await loop.run_in_executor(None, _extract_player_info_sync, source_url, quality)
+    _PLAYER_CACHE[cache_key] = (now + _PLAYER_CACHE_TTL_SECONDS, info)
+    return info
 
 
 @router.post("/parse", response_model=ParseResponse)
@@ -72,6 +275,83 @@ async def process_video(body: VideoProcessRequest, orchestrator=Depends(get_orch
     """提交视频处理，返回 task_id，前端轮询进度。"""
     task = await orchestrator.start_task(body.url)
     return {"task_id": task.task_id, "video_id": task.video_id, "status": task.status.value}
+
+
+@router.post("/player/resolve", response_model=VideoPlayerResponse)
+async def resolve_video_player(body: VideoPlayerRequest):
+    """解析当前笔记视频的可播放地址。
+
+    Cookie 只在后端使用，前端拿到的是本地代理流地址，避免泄露登录态。
+    """
+    info = await _resolve_player_info(body.url, body.quality)
+    stream_url = (
+        "/api/v1/videos/player/stream"
+        f"?source={quote(body.url, safe='')}&quality={quote(body.quality, safe='')}"
+    )
+    return VideoPlayerResponse(
+        title=info["title"],
+        source_url=info["source_url"],
+        webpage_url=info.get("webpage_url"),
+        stream_url=stream_url,
+        embed_url=info.get("embed_url"),
+        cover_url=info.get("cover_url"),
+        duration_seconds=info.get("duration_seconds"),
+        format_id=info.get("format_id"),
+        ext=info.get("ext"),
+        height=info.get("height"),
+    )
+
+
+@router.get("/player/stream")
+async def stream_video_player(
+    request: Request,
+    source: str = Query(..., min_length=1),
+    quality: str = Query("1080p"),
+):
+    """代理 B 站视频流，转发 Range 请求以支持拖动进度条。"""
+    info = await _resolve_player_info(source, quality)
+    direct_url = info["direct_url"]
+
+    headers = dict(info.get("http_headers") or {})
+    range_header = request.headers.get("range")
+    if range_header:
+        headers["Range"] = range_header
+
+    client = httpx.AsyncClient(timeout=None, follow_redirects=True)
+    upstream_request = client.build_request("GET", direct_url, headers=headers)
+    upstream = await client.send(upstream_request, stream=True)
+
+    response_headers = {}
+    for header in (
+        "content-type",
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "cache-control",
+        "etag",
+        "last-modified",
+    ):
+        value = upstream.headers.get(header)
+        if value:
+            response_headers[header] = value
+
+    response_headers.setdefault("accept-ranges", "bytes")
+
+    async def iter_stream():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                if chunk:
+                    yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        iter_stream(),
+        status_code=upstream.status_code,
+        headers=response_headers,
+        media_type=upstream.headers.get("content-type", "video/mp4"),
+    )
 
 
 @router.get("/")
