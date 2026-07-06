@@ -22,8 +22,12 @@ VN_TONGYI_API_KEY=sk-你的通义 api-key
 
 VN_DEEPSEEK_API_KEY=sk-你的DeepSeek api-key
 
+获取B站cookie:
 
-## 快速开始
+登录B站，按下Ctrl+shift+i,点击“+”里的应用程序，左侧列表的cookie,点击cookie前面的倒三角符号，会有链接，点击https://bilibili.com,就会有各类信息，复制给ai，让其整理成cookie链接，复制该链接保存到到设置里的平台数据里
+
+
+## 快速,开始
 
 本项目使用 **uv** 管理依赖，Python 版本锁定在 **3.13.3**（见 `.python-version`）。
 
