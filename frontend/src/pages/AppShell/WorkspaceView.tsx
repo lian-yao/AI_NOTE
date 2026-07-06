@@ -1,10 +1,21 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import {
+  lazy,
+  Suspense,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { toast } from 'react-hot-toast'
 import {
+  ArrowLeftRight,
   Bot,
   CheckCircle2,
+  Columns2,
   Copy,
   Download,
   Eye,
@@ -16,12 +27,16 @@ import {
   Play,
   Plus,
   RefreshCcw,
+  Save,
   Share,
   Subtitles,
+  Undo2,
   Video,
   Volume2,
   X,
 } from 'lucide-react'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
+import { cn } from '@/lib/utils'
 import type { Task } from '@/store/taskStore'
 import { useTaskStore } from '@/store/taskStore'
 import { getTaskLogs, type TaskLogItem } from '@/services/task'
@@ -34,9 +49,11 @@ import {
   getTaskTitle,
   groupSegments,
 } from './utils'
+import MarkdownRenderer from './components/MarkdownRenderer'
 
 const MarkmapEditor = lazy(() => import('./components/MarkmapComponent'))
 const ChatPanel = lazy(() => import('./components/ChatPanel'))
+type MediaPanelMode = 'video-chat' | 'chat-only'
 
 interface WorkspaceViewProps {
   task: Task | null
@@ -71,7 +88,7 @@ function createPreviewTask(
   title: string,
   summary: string,
   transcriptLines: string[],
-  status: Task['status'] = 'SUCCESS',
+  status: Task['status'] = 'SUCCESS'
 ): Task {
   const createdAt = new Date().toISOString()
   const segments = transcriptLines.map((text, index) => ({
@@ -136,7 +153,7 @@ const PREVIEW_TASKS: Task[] = [
 - 关闭当前标签
 - 保留最近打开记录
 `,
-    ['这是第一段示例字幕。', '它用于确认标签切换效果。', '关闭后会回退到相邻标签。'],
+    ['这是第一段示例字幕。', '它用于确认标签切换效果。', '关闭后会回退到相邻标签。']
   ),
   createPreviewTask(
     'preview-note-b',
@@ -148,7 +165,7 @@ const PREVIEW_TASKS: Task[] = [
 > 前端开发阶段，这比等后端数据更直观。
 `,
     ['第二条示例字幕。', '它会作为另一个标签存在。'],
-    'RUNNING',
+    'RUNNING'
   ),
   createPreviewTask(
     'preview-note-c',
@@ -158,7 +175,7 @@ const PREVIEW_TASKS: Task[] = [
 这条 mock 用来确认标签栏里的失败状态、关闭回退和右侧信息栏。
 `,
     ['第三条示例字幕。', '这里模拟任务失败时仍保留在工作区标签。'],
-    'FAILED',
+    'FAILED'
   ),
 ]
 
@@ -189,7 +206,7 @@ function WorkspaceTabs({
             return (
               <div
                 key={openTask.id}
-                className={`group flex h-9 min-w-[150px] max-w-[240px] shrink-0 items-center rounded-t-lg border px-2 transition-colors ${
+                className={`group flex h-9 max-w-[240px] min-w-[150px] shrink-0 items-center rounded-t-lg border px-2 transition-colors ${
                   active
                     ? 'border-neutral-700 border-b-[#111111] bg-[#111111] text-neutral-100'
                     : 'border-transparent bg-[#181818] text-neutral-400 hover:bg-[#202020] hover:text-neutral-200'
@@ -318,7 +335,7 @@ function StatusBlock({ task }: { task: Task }) {
           <RefreshCcw size={26} />
         </div>
       ) : (
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 className="text-primary h-8 w-8 animate-spin" />
       )}
       <div>
         <p className={`text-lg font-bold ${isFailed ? 'text-red-400' : 'text-neutral-200'}`}>
@@ -333,7 +350,10 @@ function StatusBlock({ task }: { task: Task }) {
           <div className="mb-3 text-xs font-medium text-neutral-500">后端任务日志</div>
           <div className="space-y-2">
             {logs.map((log, index) => (
-              <div key={log.id || `${log.created_at}-${index}`} className="text-xs text-neutral-400">
+              <div
+                key={log.id || `${log.created_at}-${index}`}
+                className="text-xs text-neutral-400"
+              >
                 <span className="mr-2 font-mono text-neutral-600">
                   {formatDate(log.created_at)}
                 </span>
@@ -362,11 +382,11 @@ function MindmapFallback() {
           <div className="h-8 w-24 animate-pulse rounded-lg bg-neutral-800" />
         </div>
         <div className="relative h-56 overflow-hidden rounded-xl border border-neutral-800/70 bg-[#0D0D0D]">
-          <div className="absolute left-1/2 top-1/2 h-10 w-40 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full bg-primary/20" />
-          <div className="absolute left-[18%] top-[22%] h-7 w-28 animate-pulse rounded-full bg-neutral-800" />
-          <div className="absolute right-[16%] top-[28%] h-7 w-32 animate-pulse rounded-full bg-neutral-800" />
+          <div className="bg-primary/20 absolute top-1/2 left-1/2 h-10 w-40 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full" />
+          <div className="absolute top-[22%] left-[18%] h-7 w-28 animate-pulse rounded-full bg-neutral-800" />
+          <div className="absolute top-[28%] right-[16%] h-7 w-32 animate-pulse rounded-full bg-neutral-800" />
           <div className="absolute bottom-[24%] left-[24%] h-7 w-36 animate-pulse rounded-full bg-neutral-800" />
-          <div className="absolute bottom-[18%] right-[24%] h-7 w-24 animate-pulse rounded-full bg-neutral-800" />
+          <div className="absolute right-[24%] bottom-[18%] h-7 w-24 animate-pulse rounded-full bg-neutral-800" />
         </div>
       </div>
     </div>
@@ -381,9 +401,9 @@ function ChatPanelFallback() {
           <div className="h-3 w-28 animate-pulse rounded bg-neutral-700" />
           <div className="h-3 w-full animate-pulse rounded bg-neutral-700/70" />
         </div>
-        <div className="ml-12 space-y-2 rounded-xl bg-primary/10 p-3">
-          <div className="h-3 w-32 animate-pulse rounded bg-primary/30" />
-          <div className="h-3 w-4/5 animate-pulse rounded bg-primary/20" />
+        <div className="bg-primary/10 ml-12 space-y-2 rounded-xl p-3">
+          <div className="bg-primary/30 h-3 w-32 animate-pulse rounded" />
+          <div className="bg-primary/20 h-3 w-4/5 animate-pulse rounded" />
         </div>
       </div>
       <div className="border-t border-neutral-800 p-4">
@@ -393,24 +413,378 @@ function ChatPanelFallback() {
   )
 }
 
+function useWorkspaceSplitDirection(): 'horizontal' | 'vertical' {
+  const getDirection = () => {
+    if (typeof window === 'undefined') return 'horizontal'
+    return window.matchMedia('(max-width: 1024px)').matches ? 'vertical' : 'horizontal'
+  }
+
+  const [direction, setDirection] = useState<'horizontal' | 'vertical'>(getDirection)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const query = window.matchMedia('(max-width: 1024px)')
+    const updateDirection = () => setDirection(query.matches ? 'vertical' : 'horizontal')
+
+    updateDirection()
+    query.addEventListener('change', updateDirection)
+    return () => query.removeEventListener('change', updateDirection)
+  }, [])
+
+  return direction
+}
+
+function MediaPanelIconButton({
+  title,
+  onClick,
+  children,
+}: {
+  title: string
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
+    >
+      {children}
+    </button>
+  )
+}
+
+function MediaPanelControls({
+  mode,
+  onModeChange,
+  onSwapPanels,
+}: {
+  mode: MediaPanelMode
+  onModeChange: (mode: MediaPanelMode) => void
+  onSwapPanels: () => void
+}) {
+  const videoHidden = mode === 'chat-only'
+
+  return (
+    <>
+      <MediaPanelIconButton title="左右互换" onClick={onSwapPanels}>
+        <ArrowLeftRight size={15} />
+      </MediaPanelIconButton>
+      <MediaPanelIconButton
+        title={videoHidden ? '显示视频区域' : '关闭视频区域'}
+        onClick={() => onModeChange(videoHidden ? 'video-chat' : 'chat-only')}
+      >
+        {videoHidden ? <Video size={15} /> : <X size={15} />}
+      </MediaPanelIconButton>
+    </>
+  )
+}
+
+function MediaChatHeader({ title, controls }: { title: string; controls: ReactNode }) {
+  return (
+    <div className="flex h-11 shrink-0 items-center justify-between border-b border-neutral-800/90 bg-[#171719] px-3">
+      <span className="flex items-center gap-2 text-sm font-medium text-neutral-200">
+        <MessageSquare className="text-primary h-4 w-4" />
+        {title}
+      </span>
+      <div className="flex items-center gap-1.5">{controls}</div>
+    </div>
+  )
+}
+
+function WorkspaceScrollArea({
+  active,
+  className,
+  children,
+}: {
+  active: boolean
+  className?: string
+  children: ReactNode
+}) {
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const thumbRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<number | null>(null)
+  const dragStateRef = useRef<{
+    pointerId: number
+    startY: number
+    startScrollTop: number
+    scrollPerPixel: number
+  } | null>(null)
+  const previousUserSelectRef = useRef('')
+  const previousCursorRef = useRef('')
+
+  const getThumbMetrics = useCallback(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return null
+
+    if (viewport.clientHeight <= 0 || viewport.scrollHeight <= 0) return null
+
+    const maxScrollTop = viewport.scrollHeight - viewport.clientHeight
+    const trackPadding = 10
+    const trackHeight = Math.max(0, viewport.clientHeight - trackPadding * 2)
+    if (trackHeight <= 0) return null
+
+    const thumbHeight = Math.min(
+      trackHeight,
+      Math.max(42, (viewport.clientHeight / viewport.scrollHeight) * trackHeight)
+    )
+    const maxThumbTop = Math.max(0, trackHeight - thumbHeight)
+
+    return {
+      maxScrollTop,
+      maxThumbTop,
+      thumbHeight,
+      trackHeight,
+      trackPadding,
+    }
+  }, [])
+
+  const updateThumb = useCallback(() => {
+    frameRef.current = null
+
+    const viewport = viewportRef.current
+    const thumb = thumbRef.current
+    if (!viewport || !thumb) return
+
+    const metrics = getThumbMetrics()
+    if (!metrics || !active || metrics.maxScrollTop <= 2 || viewport.clientHeight <= 0) {
+      thumb.style.opacity = '0'
+      return
+    }
+
+    const thumbTop =
+      metrics.trackPadding +
+      (viewport.scrollTop / metrics.maxScrollTop) * metrics.maxThumbTop
+
+    thumb.style.height = `${metrics.thumbHeight}px`
+    thumb.style.opacity = '0.72'
+    thumb.style.transform = `translate3d(0, ${thumbTop}px, 0)`
+  }, [active, getThumbMetrics])
+
+  const scheduleThumbUpdate = useCallback(() => {
+    if (frameRef.current !== null) return
+    frameRef.current = window.requestAnimationFrame(updateThumb)
+  }, [updateThumb])
+
+  const restoreDragDocumentState = useCallback(() => {
+    document.body.style.userSelect = previousUserSelectRef.current
+    document.body.style.cursor = previousCursorRef.current
+  }, [])
+
+  const handleThumbPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return
+
+      const viewport = viewportRef.current
+      const metrics = getThumbMetrics()
+      if (!viewport || !metrics || metrics.maxScrollTop <= 2 || metrics.maxThumbTop <= 0) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      event.currentTarget.setPointerCapture(event.pointerId)
+
+      previousUserSelectRef.current = document.body.style.userSelect
+      previousCursorRef.current = document.body.style.cursor
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = 'grabbing'
+
+      dragStateRef.current = {
+        pointerId: event.pointerId,
+        startY: event.clientY,
+        startScrollTop: viewport.scrollTop,
+        scrollPerPixel: metrics.maxScrollTop / metrics.maxThumbTop,
+      }
+    },
+    [getThumbMetrics]
+  )
+
+  const handleThumbPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const dragState = dragStateRef.current
+      const viewport = viewportRef.current
+      const metrics = getThumbMetrics()
+      if (!dragState || !viewport || !metrics || event.pointerId !== dragState.pointerId) return
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      const nextScrollTop =
+        dragState.startScrollTop + (event.clientY - dragState.startY) * dragState.scrollPerPixel
+      viewport.scrollTop = Math.max(0, Math.min(metrics.maxScrollTop, nextScrollTop))
+      scheduleThumbUpdate()
+    },
+    [getThumbMetrics, scheduleThumbUpdate]
+  )
+
+  const handleThumbPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const dragState = dragStateRef.current
+      if (!dragState || event.pointerId !== dragState.pointerId) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      dragStateRef.current = null
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
+      restoreDragDocumentState()
+      scheduleThumbUpdate()
+    },
+    [restoreDragDocumentState, scheduleThumbUpdate]
+  )
+
+  const handleTrackPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || event.target === thumbRef.current) return
+
+      const viewport = viewportRef.current
+      const metrics = getThumbMetrics()
+      const track = event.currentTarget.getBoundingClientRect()
+      if (!viewport || !metrics || metrics.maxScrollTop <= 2 || metrics.maxThumbTop <= 0) return
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      const clickY = event.clientY - track.top - metrics.trackPadding - metrics.thumbHeight / 2
+      const scrollRatio = Math.max(0, Math.min(metrics.maxThumbTop, clickY)) / metrics.maxThumbTop
+      viewport.scrollTop = scrollRatio * metrics.maxScrollTop
+      scheduleThumbUpdate()
+    },
+    [getThumbMetrics, scheduleThumbUpdate]
+  )
+
+  useEffect(() => {
+    if (!active) return
+
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    scheduleThumbUpdate()
+
+    const resizeObserver = new ResizeObserver(scheduleThumbUpdate)
+    resizeObserver.observe(viewport)
+    if (viewport.firstElementChild) {
+      resizeObserver.observe(viewport.firstElementChild)
+    }
+    window.addEventListener('resize', scheduleThumbUpdate)
+
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', scheduleThumbUpdate)
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+      if (dragStateRef.current) {
+        dragStateRef.current = null
+        restoreDragDocumentState()
+      }
+    }
+  }, [active, restoreDragDocumentState, scheduleThumbUpdate])
+
+  return (
+    <div className={cn('absolute inset-y-0 right-4 left-0', active ? 'block' : 'hidden')}>
+      <div
+        ref={viewportRef}
+        onScroll={scheduleThumbUpdate}
+        className={cn('workspace-scrollbar h-full overflow-y-auto', className)}
+      >
+        {children}
+      </div>
+      <div
+        aria-hidden
+        onPointerDown={handleTrackPointerDown}
+        className="absolute inset-y-0 right-0 w-3"
+      >
+        <div
+          ref={thumbRef}
+          onPointerDown={handleThumbPointerDown}
+          onPointerMove={handleThumbPointerMove}
+          onPointerUp={handleThumbPointerUp}
+          onPointerCancel={handleThumbPointerUp}
+          className="absolute top-0 right-0 w-1.5 cursor-grab rounded-full bg-neutral-500/75 opacity-0 shadow-[0_0_0_1px_rgba(0,0,0,0.28)] transition-[opacity,background-color] duration-150 hover:bg-neutral-300/85 active:cursor-grabbing"
+        />
+      </div>
+    </div>
+  )
+}
+
 function SummaryContent({ task }: { task: Task }) {
   const [activeTab, setActiveTab] = useState<'summary' | 'deep-reading' | 'transcript' | 'mindmap'>(
-    'summary',
+    'summary'
   )
+  const [isEditing, setIsEditing] = useState(false)
+  const [editorMode, setEditorMode] = useState<'write' | 'split' | 'preview'>('split')
+  const [draftContent, setDraftContent] = useState('')
   const [expandedGroups, setExpandedGroups] = useState<Record<number, boolean>>({})
   const retryTask = useTaskStore(state => state.retryTask)
+  const updateTaskContent = useTaskStore(state => state.updateTaskContent)
   const { content, version } = getLatestMarkdown(task.markdown)
   const segments = useMemo(() => task.transcript?.segments || [], [task.transcript?.segments])
   const segmentGroups = useMemo(() => groupSegments(segments, 8), [segments])
   const title = getTaskTitle(task)
   const isPreviewTask = task.formData.provider_id === 'preview'
+  const markdownContent = isEditing ? draftContent : content
+  const isDirty = draftContent !== content
+  const draftStats = useMemo(
+    () => ({
+      chars: draftContent.length,
+      lines: draftContent ? draftContent.split(/\r\n|\r|\n/).length : 0,
+    }),
+    [draftContent]
+  )
+
+  useEffect(() => {
+    setDraftContent(content)
+    setEditorMode('split')
+    setIsEditing(false)
+  }, [content, task.id])
+
+  const handleStartEditing = () => {
+    setDraftContent(content)
+    setEditorMode('split')
+    setActiveTab('summary')
+    setIsEditing(true)
+  }
+
+  const handleDiscardEdit = () => {
+    setDraftContent(content)
+    setIsEditing(false)
+    if (isDirty) toast('已放弃未保存修改')
+  }
+
+  const handleSaveEdit = () => {
+    if (!isDirty) {
+      setIsEditing(false)
+      return
+    }
+
+    if (isPreviewTask) {
+      toast('预览模式下不会保存')
+      return
+    }
+
+    updateTaskContent(task.id, { markdown: draftContent })
+    setIsEditing(false)
+    toast.success('已保存 Markdown 版本')
+  }
+
+  const handleEditorKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault()
+      handleSaveEdit()
+    }
+  }
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(
         activeTab === 'transcript'
           ? segments.map(segment => `[${formatTime(segment.start)}] ${segment.text}`).join('\n')
-          : content,
+          : markdownContent
       )
       toast.success('已复制到剪贴板')
     } catch {
@@ -422,7 +796,7 @@ function SummaryContent({ task }: { task: Task }) {
     const body =
       activeTab === 'transcript'
         ? segments.map(segment => `[${formatTime(segment.start)}] ${segment.text}`).join('\n')
-        : content
+        : markdownContent
     const blob = new Blob([body], { type: 'text/markdown;charset=utf-8' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
@@ -431,6 +805,85 @@ function SummaryContent({ task }: { task: Task }) {
     link.click()
     document.body.removeChild(link)
     URL.revokeObjectURL(link.href)
+  }
+
+  const renderMarkdownEditor = () => {
+    if (!isEditing) {
+      return (
+        <div className="min-h-full w-full rounded-lg border border-neutral-800/80 bg-[#141416] px-4 py-4 shadow-[0_18px_60px_rgba(0,0,0,0.24)]">
+          <MarkdownRenderer value={content} emptyPlaceholder="暂无总结内容" />
+        </div>
+      )
+    }
+
+    const editorPane = (
+      <textarea
+        value={draftContent}
+        onChange={event => setDraftContent(event.target.value)}
+        onKeyDown={handleEditorKeyDown}
+        spellCheck={false}
+        className="custom-scrollbar focus:border-primary/70 focus:ring-primary/20 h-full w-full resize-none rounded-lg border border-neutral-800 bg-[#0A0A0A] px-4 py-3 font-mono text-sm leading-6 text-neutral-100 transition-colors outline-none placeholder:text-neutral-600 focus:ring-2"
+        placeholder="# 开始编辑 Markdown"
+      />
+    )
+
+    const previewPane = (
+      <div className="custom-scrollbar h-full overflow-y-auto rounded-lg border border-neutral-800/80 bg-[#141416] px-5 py-4">
+        <MarkdownRenderer value={draftContent} emptyPlaceholder="预览内容为空" />
+      </div>
+    )
+
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-800 bg-[#151515] px-3 py-2">
+          <div className="flex h-8 items-center rounded-md border border-neutral-800 bg-[#0C0C0C] p-0.5">
+            {(['write', 'split', 'preview'] as const).map(mode => {
+              const active = editorMode === mode
+              const Icon = mode === 'write' ? PenSquare : mode === 'split' ? Columns2 : Eye
+              const label = mode === 'write' ? '编辑' : mode === 'split' ? '分屏' : '预览'
+
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setEditorMode(mode)}
+                  className={`flex h-7 items-center gap-1.5 rounded px-2.5 text-xs transition-colors ${
+                    active
+                      ? 'bg-neutral-200 text-black'
+                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'
+                  }`}
+                >
+                  <Icon size={13} />
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+          <div className="flex items-center gap-3 text-xs text-neutral-500">
+            <span>{draftStats.lines} 行</span>
+            <span>{draftStats.chars} 字符</span>
+            <span className={isDirty ? 'text-amber-300' : 'text-neutral-500'}>
+              {isDirty ? '未保存' : '已同步'}
+            </span>
+          </div>
+        </div>
+
+        <div
+          className={
+            editorMode === 'split'
+              ? 'grid h-[calc(100vh-280px)] min-h-[420px] gap-4 xl:grid-cols-2'
+              : 'h-[calc(100vh-280px)] min-h-[420px]'
+          }
+        >
+          {(editorMode === 'write' || editorMode === 'split') && (
+            <div className={editorMode === 'split' ? 'min-h-0' : 'h-full'}>{editorPane}</div>
+          )}
+          {(editorMode === 'preview' || editorMode === 'split') && (
+            <div className={editorMode === 'split' ? 'min-h-0' : 'h-full'}>{previewPane}</div>
+          )}
+        </div>
+      </div>
+    )
   }
 
   if (task.status !== 'SUCCESS') {
@@ -453,7 +906,7 @@ function SummaryContent({ task }: { task: Task }) {
               onClick={() => setActiveTab(key as typeof activeTab)}
               className={`h-14 text-sm font-medium transition-colors ${
                 activeTab === key
-                  ? 'border-b-2 border-primary text-primary'
+                  ? 'border-primary text-primary border-b-2'
                   : 'text-neutral-400 hover:text-neutral-200'
               }`}
             >
@@ -463,94 +916,118 @@ function SummaryContent({ task }: { task: Task }) {
         </div>
       </div>
 
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800/50 bg-[#161616] px-6">
-        <div className="flex items-center gap-4 text-sm text-neutral-400">
-          <span>章节 ({segmentGroups.length})</span>
-          {version && <span className="text-xs">版本 {version.ver_id.slice(-6)}</span>}
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
-          >
-            <Copy size={14} />
-            复制
-          </button>
-          <button
-            type="button"
-            onClick={handleDownload}
-            className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
-          >
-            <Download size={14} />
-            下载
-          </button>
-          <button
-            type="button"
-            onClick={() => toast('分享功能稍后接入。')}
-            className="flex items-center gap-1.5 text-xs text-pink-500 transition-colors hover:text-pink-400"
-          >
-            <Share size={14} />
-            分享
-          </button>
-        </div>
-      </div>
+      {activeTab === 'summary' && (
+        <>
+          <div className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800/50 bg-[#151515] px-6">
+            <div className="flex items-center gap-4 text-sm text-neutral-400">
+              <span>章节 ({segmentGroups.length})</span>
+              {version && <span className="text-xs">版本 {version.ver_id.slice(-6)}</span>}
+              {isEditing && (
+                <span
+                  className={`rounded border px-2 py-0.5 text-xs ${
+                    isDirty
+                      ? 'border-amber-400/30 bg-amber-400/10 text-amber-200'
+                      : 'border-neutral-700 bg-neutral-800/70 text-neutral-400'
+                  }`}
+                >
+                  {isDirty ? '草稿未保存' : '草稿已同步'}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
+              >
+                <Copy size={14} />
+                复制
+              </button>
+              <button
+                type="button"
+                onClick={handleDownload}
+                className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
+              >
+                <Download size={14} />
+                下载
+              </button>
+              <button
+                type="button"
+                onClick={() => toast('分享功能稍后接入。')}
+                className="flex items-center gap-1.5 text-xs text-pink-500 transition-colors hover:text-pink-400"
+              >
+                <Share size={14} />
+                分享
+              </button>
+            </div>
+          </div>
 
-      <div className="flex shrink-0 items-center justify-between px-6 py-3">
-        <div className="flex items-center gap-2 text-sm text-primary">
-          <CheckCircle2 size={16} />
-          <span>{statusLabel[task.status]}</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <button
-            type="button"
-            onClick={() => toast('编辑模式稍后接入。')}
-            className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
-          >
-            <PenSquare size={14} />
-            编辑
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (isPreviewTask) {
-                toast('预览模式下不会重新生成')
-                return
-              }
-              retryTask(task.id)
-            }}
-            className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
-          >
-            <RefreshCcw size={14} />
-            重新总结
-          </button>
-        </div>
-      </div>
+          <div className="flex shrink-0 items-center justify-between border-b border-neutral-800/40 px-6 py-3">
+            <div className="text-primary flex items-center gap-2 text-sm">
+              <CheckCircle2 size={16} />
+              <span>{statusLabel[task.status]}</span>
+            </div>
+            <div className="flex items-center gap-4">
+              {isEditing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleDiscardEdit}
+                    className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
+                  >
+                    <Undo2 size={14} />
+                    放弃
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveEdit}
+                    disabled={!isDirty}
+                    className="text-primary flex items-center gap-1.5 text-xs transition-colors hover:text-blue-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+                  >
+                    <Save size={14} />
+                    保存版本
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleStartEditing}
+                  className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
+                >
+                  <PenSquare size={14} />
+                  编辑
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (isPreviewTask) {
+                    toast('预览模式下不会重新生成')
+                    return
+                  }
+                  retryTask(task.id)
+                }}
+                className="flex items-center gap-1.5 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
+              >
+                <RefreshCcw size={14} />
+                重新总结
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="relative flex-1 overflow-hidden">
-        <div
-          className={`custom-scrollbar absolute inset-0 overflow-y-auto px-6 pb-20 pt-6 ${
-            activeTab === 'summary' ? 'block' : 'hidden'
-          }`}
+        <WorkspaceScrollArea
+          active={activeTab === 'summary'}
+          className="pt-2 pr-1 pb-8 pl-2"
         >
-          <div className="mx-auto max-w-3xl">
-            <h2 className="mb-4 text-2xl font-bold text-neutral-100">{title}</h2>
-            {content ? (
-              <div className="prose prose-invert max-w-none prose-headings:text-neutral-100 prose-a:text-primary prose-strong:text-neutral-100 prose-code:text-neutral-100 prose-pre:bg-[#0A0A0A]">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-              </div>
-            ) : (
-              <div className="flex h-32 items-center justify-center rounded-xl border border-dashed border-neutral-800 bg-[#1A1A1A] text-sm text-neutral-600">
-                暂无总结内容
-              </div>
-            )}
-          </div>
-        </div>
+          <div className="w-full max-w-none">{renderMarkdownEditor()}</div>
+        </WorkspaceScrollArea>
 
-        <div
-          className={`custom-scrollbar absolute inset-0 overflow-y-auto px-6 pb-20 pt-6 ${
-            activeTab === 'deep-reading' ? 'block' : 'hidden'
-          }`}
+        <WorkspaceScrollArea
+          active={activeTab === 'deep-reading'}
+          className="pt-6 pr-3 pb-20 pl-6"
         >
           <div className="mx-auto max-w-3xl space-y-8">
             <div className="border-b border-neutral-800/50 pb-4">
@@ -562,7 +1039,7 @@ function SummaryContent({ task }: { task: Task }) {
                 <div key={`${group.start}-${index}`} className="mb-8">
                   <div className="mb-3 flex items-center justify-between gap-4">
                     <h3 className="flex items-center gap-2 font-medium text-blue-400">
-                      <span className="font-mono text-primary">{formatTime(group.start)}</span>
+                      <span className="text-primary font-mono">{formatTime(group.start)}</span>
                       <span>{group.text.slice(0, 42) || '字幕片段'}</span>
                     </h3>
                     <button
@@ -584,7 +1061,10 @@ function SummaryContent({ task }: { task: Task }) {
                       </div>
                       <div className="space-y-4">
                         {group.segments.map(segment => (
-                          <div key={`${segment.start}-${segment.text}`} className="flex gap-4 text-sm">
+                          <div
+                            key={`${segment.start}-${segment.text}`}
+                            className="flex gap-4 text-sm"
+                          >
                             <div className="w-14 shrink-0 font-mono text-blue-400">
                               {formatTime(segment.start)}
                             </div>
@@ -602,12 +1082,11 @@ function SummaryContent({ task }: { task: Task }) {
               </div>
             )}
           </div>
-        </div>
+        </WorkspaceScrollArea>
 
-        <div
-          className={`custom-scrollbar absolute inset-0 overflow-y-auto px-6 pb-20 pt-6 ${
-            activeTab === 'transcript' ? 'block' : 'hidden'
-          }`}
+        <WorkspaceScrollArea
+          active={activeTab === 'transcript'}
+          className="pt-6 pr-3 pb-20 pl-6"
         >
           <div className="mx-auto max-w-3xl">
             <div className="mb-6 flex items-center justify-between border-b border-neutral-800/50 pb-4">
@@ -625,7 +1104,7 @@ function SummaryContent({ task }: { task: Task }) {
               {segments.length > 0 ? (
                 segments.map(segment => (
                   <div key={`${segment.start}-${segment.text}`} className="flex gap-4 text-sm">
-                    <div className="w-14 shrink-0 font-mono text-primary">
+                    <div className="text-primary w-14 shrink-0 font-mono">
                       {formatTime(segment.start)}
                     </div>
                     <div className="leading-relaxed text-neutral-300">{segment.text}</div>
@@ -636,12 +1115,17 @@ function SummaryContent({ task }: { task: Task }) {
               )}
             </div>
           </div>
-        </div>
+        </WorkspaceScrollArea>
 
         <div className={`absolute inset-0 ${activeTab === 'mindmap' ? 'block' : 'hidden'}`}>
-          {activeTab !== 'mindmap' ? null : content ? (
+          {activeTab !== 'mindmap' ? null : markdownContent ? (
             <Suspense fallback={<MindmapFallback />}>
-              <MarkmapEditor value={content} onChange={() => {}} height="100%" title={title} />
+              <MarkmapEditor
+                value={markdownContent}
+                onChange={() => {}}
+                height="100%"
+                title={title}
+              />
             </Suspense>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-neutral-500">
@@ -654,7 +1138,17 @@ function SummaryContent({ task }: { task: Task }) {
   )
 }
 
-function VideoChatPanel({ task }: { task: Task | null }) {
+function VideoChatPanel({
+  task,
+  mode,
+  onModeChange,
+  onSwapPanels,
+}: {
+  task: Task | null
+  mode: MediaPanelMode
+  onModeChange: (mode: MediaPanelMode) => void
+  onSwapPanels: () => void
+}) {
   const [chatReadyToLoad, setChatReadyToLoad] = useState(false)
   const coverUrl = getTaskCoverUrl(task)
   const title = getTaskTitle(task)
@@ -664,6 +1158,11 @@ function VideoChatPanel({ task }: { task: Task | null }) {
   const taskId = task?.id
   const taskStatus = task?.status
   const isPreviewTask = task?.formData.provider_id === 'preview'
+  const showVideoArea = mode === 'video-chat'
+  const chatTitle = showVideoArea ? '视频问答' : 'AI 对话'
+  const controls = (
+    <MediaPanelControls mode={mode} onModeChange={onModeChange} onSwapPanels={onSwapPanels} />
+  )
 
   useEffect(() => {
     setChatReadyToLoad(false)
@@ -678,125 +1177,158 @@ function VideoChatPanel({ task }: { task: Task | null }) {
 
   if (!task) {
     return (
-      <div className="flex h-full flex-col items-center justify-center border-l border-neutral-800 bg-[#111111]">
-        <div className="mb-4 text-neutral-700">
-          <Video size={48} strokeWidth={1} />
+      <div className="flex h-full flex-col bg-[#111111]">
+        <MediaChatHeader title={showVideoArea ? '视频与对话' : chatTitle} controls={controls} />
+        <div className="flex flex-1 flex-col items-center justify-center">
+          <div className="mb-4 text-neutral-700">
+            <Video size={48} strokeWidth={1} />
+          </div>
+          <p className="text-sm text-neutral-500">等待视频载入...</p>
         </div>
-        <p className="text-sm text-neutral-500">等待视频载入...</p>
       </div>
     )
   }
 
   if (isPreviewTask) {
     return (
-      <div className="flex h-full flex-col border-l border-neutral-800 bg-[#111111]">
-        <div className="relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black">
-          <div className="absolute inset-0 flex items-center justify-center bg-neutral-900">
-            <div className="flex flex-col items-center text-neutral-600">
-              <Video size={32} className="mb-2 opacity-30" />
-              <span className="text-xs">预览模式</span>
+      <div className="flex h-full flex-col bg-[#111111]">
+        {showVideoArea && (
+          <>
+            <div className="relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black">
+              <div className="absolute inset-0 flex items-center justify-center bg-neutral-900">
+                <div className="flex flex-col items-center text-neutral-600">
+                  <Video size={32} className="mb-2 opacity-30" />
+                  <span className="text-xs">预览模式</span>
+                </div>
+              </div>
+              <div className="absolute top-3 left-3 rounded-full bg-black/70 px-2 py-1 text-xs text-neutral-200 backdrop-blur-sm">
+                示例数据
+              </div>
+            </div>
+
+            <div className="shrink-0 border-b border-neutral-800 p-4">
+              <div className="mb-2 flex items-center justify-between gap-4">
+                <h3 className="line-clamp-1 text-lg font-bold text-neutral-100">{title}</h3>
+                <span className="bg-primary/10 text-primary shrink-0 rounded px-2 py-1 text-xs">
+                  预览
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                {author && <span className="text-primary text-sm font-medium">{author}</span>}
+                {createdAt && <span className="text-xs text-neutral-500">{createdAt}</span>}
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#151515]">
+          <MediaChatHeader title={chatTitle} controls={controls} />
+          <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-neutral-400">
+            <div>
+              <Bot className="mx-auto mb-3 h-6 w-6 text-neutral-600" />
+              {showVideoArea
+                ? '这里保留的是演示位，你切换左侧标签时可以看到多个打开记录、关闭回退和空态重现。'
+                : '当前已关闭视频区域，只保留 AI 对话面板。预览任务不会连接后端问答。'}
             </div>
           </div>
-          <div className="absolute left-3 top-3 rounded-full bg-black/70 px-2 py-1 text-xs text-neutral-200 backdrop-blur-sm">
-            示例数据
-          </div>
-        </div>
-
-        <div className="shrink-0 border-b border-neutral-800 p-4">
-          <div className="mb-2 flex items-center justify-between gap-4">
-            <h3 className="line-clamp-1 text-lg font-bold text-neutral-100">{title}</h3>
-            <span className="shrink-0 rounded bg-primary/10 px-2 py-1 text-xs text-primary">
-              预览
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            {author && <span className="text-sm font-medium text-primary">{author}</span>}
-            {createdAt && <span className="text-xs text-neutral-500">{createdAt}</span>}
-          </div>
-        </div>
-
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-[#161616] px-6 text-center text-sm text-neutral-400">
-          这里保留的是演示位，你切换左侧标签时可以看到多个打开记录、关闭回退和空态重现。
         </div>
       </div>
     )
   }
 
   return (
-    <div className="flex h-full flex-col border-l border-neutral-800 bg-[#111111]">
-      <div className="relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black">
-        <div className="absolute inset-0 flex items-center justify-center bg-neutral-900">
-          {coverUrl ? (
-            <img
-              src={coverUrl}
-              alt={title}
-              referrerPolicy="no-referrer"
-              className="h-full w-full object-cover opacity-70"
-            />
-          ) : (
-            <div className="flex flex-col items-center text-neutral-600">
-              <Video size={32} className="mb-2 opacity-30" />
-              <span className="text-xs">暂无画面</span>
+    <div className="flex h-full flex-col bg-[#111111]">
+      {showVideoArea && (
+        <>
+          <div className="relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black">
+            <div className="absolute inset-0 flex items-center justify-center bg-neutral-900">
+              {coverUrl ? (
+                <img
+                  src={coverUrl}
+                  alt={title}
+                  referrerPolicy="no-referrer"
+                  className="h-full w-full object-cover opacity-70"
+                />
+              ) : (
+                <div className="flex flex-col items-center text-neutral-600">
+                  <Video size={32} className="mb-2 opacity-30" />
+                  <span className="text-xs">暂无画面</span>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        <div className="absolute bottom-0 left-0 right-0 flex h-12 items-center justify-between bg-gradient-to-t from-black/80 to-transparent px-4">
-          <div className="flex items-center gap-4 text-white">
-            <Play size={18} fill="currentColor" />
-            <div className="flex items-center gap-2 text-xs font-medium">
-              <span>00:00</span>
-              <span>/</span>
-              <span>{duration}</span>
+            <div className="absolute right-0 bottom-0 left-0 flex h-12 items-center justify-between bg-gradient-to-t from-black/80 to-transparent px-4">
+              <div className="flex items-center gap-4 text-white">
+                <Play size={18} fill="currentColor" />
+                <div className="flex items-center gap-2 text-xs font-medium">
+                  <span>00:00</span>
+                  <span>/</span>
+                  <span>{duration}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-white">
+                <Volume2 size={18} />
+                <Maximize size={18} />
+              </div>
             </div>
           </div>
-          <div className="flex items-center gap-4 text-white">
-            <Volume2 size={18} />
-            <Maximize size={18} />
+
+          <div className="shrink-0 border-b border-neutral-800 p-4">
+            <div className="mb-2 flex items-center justify-between gap-4">
+              <h3 className="line-clamp-1 text-lg font-bold text-neutral-100">{title}</h3>
+              <span
+                className={`shrink-0 rounded px-2 py-1 text-xs ${
+                  task.status === 'SUCCESS'
+                    ? 'bg-primary/10 text-primary'
+                    : task.status === 'FAILED'
+                      ? 'bg-red-500/10 text-red-400'
+                      : 'bg-neutral-800 text-neutral-300'
+                }`}
+              >
+                {statusLabel[task.status] || task.status}
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              {author && <span className="text-primary text-sm font-medium">{author}</span>}
+              {createdAt && <span className="text-xs text-neutral-500">{createdAt}</span>}
+            </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
 
-      <div className="shrink-0 border-b border-neutral-800 p-4">
-        <div className="mb-2 flex items-center justify-between gap-4">
-          <h3 className="line-clamp-1 text-lg font-bold text-neutral-100">{title}</h3>
-          <span
-            className={`shrink-0 rounded px-2 py-1 text-xs ${
-              task.status === 'SUCCESS'
-                ? 'bg-primary/10 text-primary'
-                : task.status === 'FAILED'
-                  ? 'bg-red-500/10 text-red-400'
-                  : 'bg-neutral-800 text-neutral-300'
-            }`}
-          >
-            {statusLabel[task.status] || task.status}
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          {author && <span className="text-sm font-medium text-primary">{author}</span>}
-          {createdAt && <span className="text-xs text-neutral-500">{createdAt}</span>}
-        </div>
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#161616]">
-        <div className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-800 bg-[#1A1A1A] px-4">
-          <span className="flex items-center gap-2 text-sm font-medium text-neutral-300">
-            <MessageSquare size={14} />
-            视频问答
-          </span>
-        </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#151515]">
         {task.status === 'SUCCESS' ? (
           chatReadyToLoad ? (
-            <Suspense fallback={<ChatPanelFallback />}>
-              <ChatPanel taskId={task.id} mode="half" onModeChange={() => {}} />
+            <Suspense
+              fallback={
+                <div className="flex h-full flex-col overflow-hidden bg-[#151515]">
+                  <MediaChatHeader title={chatTitle} controls={controls} />
+                  <ChatPanelFallback />
+                </div>
+              }
+            >
+              <ChatPanel
+                taskId={task.id}
+                mode="half"
+                onModeChange={() => {}}
+                title={chatTitle}
+                headerActions={controls}
+                showModeToggle={false}
+              />
             </Suspense>
           ) : (
-            <ChatPanelFallback />
+            <div className="flex h-full flex-col overflow-hidden bg-[#151515]">
+              <MediaChatHeader title={chatTitle} controls={controls} />
+              <ChatPanelFallback />
+            </div>
           )
         ) : (
-          <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-neutral-500">
-            <div>
-              <Bot className="mx-auto mb-3 h-6 w-6 text-neutral-600" />
-              笔记完成后即可基于视频内容提问。
+          <div className="flex h-full flex-col overflow-hidden bg-[#151515]">
+            <MediaChatHeader title={chatTitle} controls={controls} />
+            <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-neutral-500">
+              <div>
+                <Bot className="mx-auto mb-3 h-6 w-6 text-neutral-600" />
+                笔记完成后即可基于视频内容提问。
+              </div>
             </div>
           </div>
         )}
@@ -817,9 +1349,13 @@ export default function WorkspaceView({
 }: WorkspaceViewProps) {
   const [previewMode, setPreviewMode] = useState(ENABLE_WORKSPACE_MOCK)
   const [previewOpenTaskIds, setPreviewOpenTaskIds] = useState<string[]>(
-    PREVIEW_TASKS.map(previewTask => previewTask.id),
+    PREVIEW_TASKS.map(previewTask => previewTask.id)
   )
   const [previewActiveTaskId, setPreviewActiveTaskId] = useState(PREVIEW_TASKS[0]?.id || '')
+  const [mediaPanelMode, setMediaPanelMode] = useState<MediaPanelMode>('video-chat')
+  const [panelsSwapped, setPanelsSwapped] = useState(false)
+  const splitDirection = useWorkspaceSplitDirection()
+  const isVerticalSplit = splitDirection === 'vertical'
   const hasRealTabs = openTasks.length > 0
   const isPreviewActive = previewMode && !hasRealTabs
   const visibleTasks = isPreviewActive
@@ -877,6 +1413,53 @@ export default function WorkspaceView({
     onCloseTask(taskId)
   }
 
+  const renderWorkspacePanel = (order: number) => (
+    <ResizablePanel
+      id="workspace"
+      order={order}
+      defaultSize={isVerticalSplit ? 58 : 62}
+      minSize={isVerticalSplit ? 36 : 38}
+      className="min-h-0 min-w-0"
+    >
+      <div className="flex h-full min-w-0 flex-col bg-[#111111]">
+        {visibleTask ? (
+          <SummaryContent key={visibleTask.id} task={visibleTask} />
+        ) : (
+          <EmptyWorkspace
+            onNewTask={onNewTask}
+            onPreviewDemo={ENABLE_WORKSPACE_MOCK ? () => setPreviewMode(true) : undefined}
+          />
+        )}
+      </div>
+    </ResizablePanel>
+  )
+
+  const renderMediaPanel = (order: number) => (
+    <ResizablePanel
+      id="media-chat"
+      order={order}
+      defaultSize={isVerticalSplit ? 42 : 38}
+      minSize={isVerticalSplit ? 28 : 26}
+      className="min-h-0 min-w-0"
+    >
+      <div className="h-full min-w-0 bg-[#141414]">
+        <VideoChatPanel
+          task={visibleTask || null}
+          mode={mediaPanelMode}
+          onModeChange={setMediaPanelMode}
+          onSwapPanels={() => setPanelsSwapped(prev => !prev)}
+        />
+      </div>
+    </ResizablePanel>
+  )
+
+  const resizeHandle = (
+    <ResizableHandle
+      withHandle
+      className="hover:bg-primary/60 data-[resize-handle-state=drag]:bg-primary bg-neutral-800/90 transition-colors"
+    />
+  )
+
   return (
     <div className="absolute inset-0 flex flex-col bg-[#0E0E0E]">
       <WorkspaceTabs
@@ -886,21 +1469,25 @@ export default function WorkspaceView({
         onCloseTask={handleCloseTask}
         onNewTask={onNewTask}
       />
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-[400px] flex-1 flex-col border-r border-neutral-800">
-          {visibleTask ? (
-            <SummaryContent key={visibleTask.id} task={visibleTask} />
-          ) : (
-            <EmptyWorkspace
-              onNewTask={onNewTask}
-              onPreviewDemo={ENABLE_WORKSPACE_MOCK ? () => setPreviewMode(true) : undefined}
-            />
-          )}
-        </div>
-        <div className="flex w-[500px] flex-col bg-[#141414] xl:w-[600px]">
-          <VideoChatPanel task={visibleTask || null} />
-        </div>
-      </div>
+      <ResizablePanelGroup
+        direction={splitDirection}
+        autoSaveId="workspace-main-split"
+        className="min-h-0 flex-1 bg-[#0E0E0E]"
+      >
+        {panelsSwapped ? (
+          <>
+            {renderMediaPanel(1)}
+            {resizeHandle}
+            {renderWorkspacePanel(2)}
+          </>
+        ) : (
+          <>
+            {renderWorkspacePanel(1)}
+            {resizeHandle}
+            {renderMediaPanel(2)}
+          </>
+        )}
+      </ResizablePanelGroup>
     </div>
   )
 }
