@@ -177,7 +177,7 @@ function mergeBackendTask(existing: Task | undefined, incoming: Task): Task {
     audioMeta: {
       ...existing.audioMeta,
       ...incoming.audioMeta,
-      raw_info: incoming.audioMeta.raw_info || existing.audioMeta.raw_info,
+      raw_info: (incoming.audioMeta?.raw_info || existing.audioMeta?.raw_info || {}),
     },
   }
 }
@@ -475,7 +475,7 @@ function TaskCard({
   const coverUrl = getTaskCoverUrl(task)
   const title = getTaskTitle(task)
   const author = getTaskAuthor(task) || task.formData.platform
-  const duration = formatTime(task.audioMeta.duration)
+  const duration = formatTime(task.audioMeta?.duration || 0)
   const createdAt = formatDate(task.createdAt)
 
   return (

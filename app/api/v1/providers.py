@@ -148,12 +148,39 @@ async def delete_provider(provider_id: str):
 
 @router.post("/{provider_id}/test")
 async def test_provider(provider_id: str, body: dict = None):
-    """测试连接（模拟）"""
+    """测试连接（真实调用提供者 API）"""
     p = _providers.get(provider_id)
     if not p:
         raise HTTPException(404, "Provider not found")
-    # 简单模拟，实际可调用 /models 接口
-    return ApiResponse(data={"ok": True, "latency_ms": 150})
+    api_key = p.get("api_key", "")
+    base_url = p.get("base_url", "").rstrip("/")
+    if not api_key:
+        return ApiResponse(code=1, message="API Key 未配置", data={"ok": False})
+    if not base_url:
+        return ApiResponse(code=1, message="Base URL 未配置", data={"ok": False})
+    import time
+    try:
+        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+            t0 = time.time()
+            if p["type"] == "tongyi":
+                # 通义千问 chat 接口
+                resp = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": "qwen-plus", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 5}
+                )
+            else:
+                # OpenAI 兼容格式
+                resp = await client.get(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+            resp.raise_for_status()
+            latency = int((time.time() - t0) * 1000)
+            return ApiResponse(data={"ok": True, "latency_ms": latency})
+    except httpx.TimeoutException:
+        return ApiResponse(code=1, message="连接超时", data={"ok": False})
+    except httpx.HTTPStatusError as e:
+        return ApiResponse(code=1, message=f"API 返回错误码 {e.response.status_code}，请检查 API Key", data={"ok": False})
+    except Exception as e:
+        return ApiResponse(code=1, message=f"连接失败: {str(e)[:100]}", data={"ok": False})
 
 @router.get("/{provider_id}/remote-models")
 async def remote_models(provider_id: str):

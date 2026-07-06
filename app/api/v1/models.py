@@ -54,6 +54,7 @@ async def list_models(provider_id: Optional[str] = None, enabled: bool = True):
 @router.post("")
 async def enable_model(req: CreateModelRequest):
     """启用一个模型"""
+    global _id_counter
     # 检查是否已存在
     for m in _models:
         if m["provider_id"] == req.provider_id and m["model_name"] == req.model_name:

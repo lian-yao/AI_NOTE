@@ -7,7 +7,7 @@ interface AILogoProps {
 }
 
 const AILogo = ({ name, style = 'Color', size = 24 }: AILogoProps) => {
-    const Icon = name ? Icons[name as keyof typeof Icons] : undefined;
+    const Icon = name ? Icons[name as keyof typeof Icons] as unknown as React.FC<{ size?: number }> : undefined;
     if (!Icon) {
         if (name && name !== 'custom') {
             console.warn(`AILogo: 未匹配到图标，使用占位: ${name}`);
@@ -15,7 +15,7 @@ const AILogo = ({ name, style = 'Color', size = 24 }: AILogoProps) => {
         return <span style={{ fontSize: size }}>🚫</span>;
     }
 
-    const Variant = Icon[style as keyof typeof Icon];
+    const Variant = Icon[style as keyof typeof Icon] as React.FC<{ size?: number }> | undefined;
     if (!Variant) {
         return <Icon size={size} />;
     }
