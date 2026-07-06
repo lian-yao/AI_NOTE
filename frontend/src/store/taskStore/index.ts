@@ -404,8 +404,8 @@ export const useTaskStore = create<TaskStore>()(
         // 调用后端删除接口（如果找到了任务）
         if (task) {
           await delete_task({
-            video_id: task.audioMeta.video_id,
-            platform: task.formData.platform,
+            video_id: task.audioMeta?.video_id || task.id,
+            platform: task.formData?.platform || "",
           })
         }
       },

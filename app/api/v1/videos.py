@@ -128,11 +128,6 @@ async def delete_video(video_id: str, db: Session = Depends(get_db)):
         if p.exists():
             p.unlink(missing_ok=True)
         deleted_chunks = note.total_chunks or 0
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(MockStore().delete_chunks(str(video.id)))
-    finally:
-        loop.close()
     db.delete(video)
     db.commit()
     return {
