@@ -166,20 +166,26 @@ class PipelineOrchestrator:
                 self.llm = MockLLM()
 
         # ── Transcriber: 配置了必剪凭证则用必剪 ──
-        self.transcriber = MockTranscriber()
-        if not transcriber:
+        if transcriber:
+            self.transcriber = transcriber
+        else:
             from app.core.config import settings
             if settings.bjian_app_id and settings.bjian_access_token:
                 self.transcriber = BjianTranscriber()
-        elif transcriber:
-            self.transcriber = transcriber
+            else:
+                try:
+                    from app.transcriber.auto import AutoTranscriber
+                    self.transcriber = AutoTranscriber()
+                except Exception:
+                    self.transcriber = MockTranscriber()
 
-        # ── VectorStore: 优先用 ChromaDB（本地运行，无需 API） ──
+        # ── VectorStore: 暂时用 MockStore（ChromaDB 在 Python 3.13 下会崩溃） ──
         if vector_store:
             self.vector_store = vector_store
         else:
             try:
-                self.vector_store = VectorStore()
+                from app.store.mock import MockStore
+                self.vector_store = MockStore()
             except Exception:
                 self.vector_store = MockStore()
 

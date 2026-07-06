@@ -449,7 +449,7 @@ export default function GenerateView({
 
       if (existingTask) {
         const shouldRegenerate = window.confirm(
-          `视频「${existingTask.audioMeta.title || targetUrl}」已经生成过笔记，是否重新生成？\n\n确定：重新生成\n取消：打开已有笔记`,
+          `视频「${existingTask.audioMeta?.title || targetUrl}」已经生成过笔记，是否重新生成？\n\n确定：重新生成\n取消：打开已有笔记`,
         )
         if (!shouldRegenerate) {
           setCurrentTask(existingTask.id)
@@ -505,6 +505,11 @@ export default function GenerateView({
       setBatchUrls('')
       onSubmitted()
     } catch (error) {
+      const msg = error?.response?.data?.error?.message
+        || error?.response?.data?.message
+        || error?.message
+        || '提交任务失败，请检查网络连接和后端数据库是否正常'
+      toast.error(msg)
       console.error('提交任务失败:', error)
     } finally {
       setIsSubmitting(false)

@@ -16,12 +16,22 @@ def get_task(task_id: str, request: Request, db: Session = Depends(get_db)):
     if orch:
         pipe_task = orch.get_task(task_id)
         if pipe_task:
+            result = None
+            if pipe_task.status.value == "completed" and pipe_task.note_id:
+                from app.models.note import Note
+                from pathlib import Path
+                nr = db.query(Note).filter(Note.id == pipe_task.note_id).first()
+                if nr and nr.file_path:
+                    fp = Path(nr.file_path)
+                    if fp.exists():
+                        result = {"markdown": fp.read_text(encoding="utf-8")}
             return {
                 "task_id": pipe_task.task_id,
                 "video_id": pipe_task.video_id,
                 "status": pipe_task.status.value,
                 "progress": pipe_task.progress,
                 "message": pipe_task.error or "",
+                "result": result,
             }
     # 2. 支持 video_id 查询（返回笔记内容）
     from app.models.video import Video
@@ -78,3 +88,33 @@ def retry_task(task_id: str, db: Session = Depends(get_db)):
     task.error_message = None
     db.commit()
     return {"task_id": task.task_id, "status": task.status, "retry_count": task.retry_count}
+
+@router.post("/{task_id}/cancel")
+def cancel_task(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """取消正在进行的任务。"""
+    # 1. 取消 orchestrator 内存任务
+    orch = getattr(request.app.state, "orchestrator", None)
+    cancelled_any = False
+    if orch:
+        cancelled_any = orch.cancel_task(task_id)
+        if not cancelled_any:
+            # 还可能是视频 ID 作为 task_id 传入
+            try:
+                for tid, t in list(orch._tasks.items()):
+                    if t.video_id == task_id:
+                        orch.cancel_task(tid)
+                        cancelled_any = True
+                        break
+            except Exception:
+                pass
+    # 2. 更新 DB 任务记录
+    tasks = db.query(TaskModel).filter(
+        TaskModel.task_id.like(f"%{task_id}%"),
+        TaskModel.status.in_(["pending", "running"])
+    ).all()
+    for t in tasks:
+        t.status = "cancelled"
+        t.error_message = "已被用户取消"
+    db.commit()
+    return {"task_id": task_id, "status": "cancelled", "cancelled": cancelled_any}
+

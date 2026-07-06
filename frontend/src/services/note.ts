@@ -240,3 +240,8 @@ export const get_task_status = async (task_id: string): Promise<TaskStatusRespon
     result,
   }
 }
+
+
+export const cancelBackendTask = async (taskId: string): Promise<void> => {
+  return await request.post(/tasks//cancel)
+}

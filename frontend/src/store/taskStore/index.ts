@@ -410,6 +410,23 @@ export const useTaskStore = create<TaskStore>()(
         }
       },
 
+      cancelTask: async (id: string) => {
+        const { tasks } = get()
+        const task = tasks.find(t => t.id === id)
+        if (!task) return
+        // 标记为已取消，不再轮询
+        set(state => ({
+          tasks: state.tasks.filter(t => t.id !== id),
+        }))
+        try {
+          const { cancelBackendTask } = await import('@/services/note')
+          await cancelBackendTask(id)
+          toast.success('任务已取消')
+        } catch (e) {
+          console.error('取消失败:', e)
+        }
+      },
+
       clearTasks: () => set({ tasks: [], currentTaskId: null }),
 
       setCurrentTask: taskId => set({ currentTaskId: taskId }),

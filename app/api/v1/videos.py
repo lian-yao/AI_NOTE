@@ -106,7 +106,14 @@ def get_video(video_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/{video_id}")
-async def delete_video(video_id: str, db: Session = Depends(get_db)):
+async def delete_video(video_id: str, request: Request, db: Session = Depends(get_db)):
+    # 取消正在运行的管线任务
+    orch = getattr(request.app.state, "orchestrator", None)
+    if orch:
+        for tid, t in list(getattr(orch, "_tasks", {}).items()):
+            if t.video_id == video_id:
+                orch.cancel_task(tid)
+                break
     video = db.query(Video).filter(Video.video_id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
