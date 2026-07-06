@@ -69,6 +69,16 @@ class VideoProcessRequest(BaseModel):
     quality: str = "1080p"
     transcriber: str = "auto"
     keep_video: bool = False
+    provider_id: str | None = None
+    model_name: str | None = None
+    format: list[str] | None = None
+    style: str | None = None
+    extras: str | None = None
+    video_understanding: bool = False
+    video_interval: int = 6
+    grid_size: list[int] | None = None
+    platform: str | None = None
+    task_id: str | None = None
 
 
 def get_orchestrator(request: Request):
@@ -279,10 +289,20 @@ def _extract_player_info_sync(source_url: str, quality: str) -> dict:
     selected = _choose_player_format(info, quality)
     embed_url = _bilibili_embed_url(source_url, info)
     if not selected:
-        raise HTTPException(
-            status_code=409,
-            detail="B 站当前只返回分离音视频流，暂无法用内置播放器直连播放",
-        )
+        return {
+            "title": info.get("title") or "Bilibili 视频",
+            "source_url": source_url,
+            "webpage_url": info.get("webpage_url") or source_url,
+            "direct_url": None,
+            "embed_url": embed_url,
+            "cover_url": info.get("thumbnail") or None,
+            "duration_seconds": int(info["duration"]) if info.get("duration") else None,
+            "format_id": None,
+            "ext": None,
+            "height": None,
+            "http_headers": {},
+            "player_type": "embed",
+        }
 
     direct_url = selected.get("url")
     if not direct_url:
@@ -319,6 +339,7 @@ def _extract_player_info_sync(source_url: str, quality: str) -> dict:
         "ext": selected.get("ext"),
         "height": int(selected["height"]) if selected.get("height") else None,
         "http_headers": http_headers,
+        "player_type": "native",
     }
 
 
@@ -364,7 +385,22 @@ async def parse_video(body: VideoParseRequest):
 @router.post("/process")
 async def process_video(body: VideoProcessRequest, orchestrator=Depends(get_orchestrator)):
     """提交视频处理，返回 task_id，前端轮询进度。"""
-    task = await orchestrator.start_task(body.url)
+    options = {
+        "quality": body.quality,
+        "transcriber": body.transcriber,
+        "keep_video": body.keep_video,
+        "provider_id": body.provider_id,
+        "model_name": body.model_name,
+        "format": body.format or [],
+        "style": body.style,
+        "extras": body.extras,
+        "video_understanding": body.video_understanding,
+        "video_interval": body.video_interval,
+        "grid_size": body.grid_size or [],
+        "platform": body.platform,
+        "client_task_id": body.task_id,
+    }
+    task = await orchestrator.start_task(body.url, options=options)
     return {"task_id": task.task_id, "video_id": task.video_id, "status": task.status.value}
 
 
@@ -399,10 +435,12 @@ async def resolve_video_player(body: VideoPlayerRequest, db: Session = Depends(g
         )
 
     info = await _resolve_player_info(body.url, body.quality)
-    stream_url = (
-        "/api/v1/videos/player/stream"
-        f"?source={quote(body.url, safe='')}&quality={quote(body.quality, safe='')}"
-    )
+    stream_url = None
+    if info.get("direct_url"):
+        stream_url = (
+            "/api/v1/videos/player/stream"
+            f"?source={quote(body.url, safe='')}&quality={quote(body.quality, safe='')}"
+        )
     return VideoPlayerResponse(
         title=info["title"],
         source_url=info["source_url"],
@@ -415,7 +453,8 @@ async def resolve_video_player(body: VideoPlayerRequest, db: Session = Depends(g
         format_id=info.get("format_id"),
         ext=info.get("ext"),
         height=info.get("height"),
-        player_type="native",
+        is_proxy_stream=bool(stream_url),
+        player_type=info.get("player_type") or ("native" if stream_url else "embed"),
     )
 
 
@@ -427,7 +466,12 @@ async def stream_video_player(
 ):
     """代理 B 站视频流，转发 Range 请求以支持拖动进度条。"""
     info = await _resolve_player_info(source, quality)
-    direct_url = info["direct_url"]
+    direct_url = info.get("direct_url")
+    if not direct_url:
+        raise HTTPException(
+            status_code=409,
+            detail="B 站当前只返回分离音视频流，请使用嵌入播放器播放",
+        )
 
     headers = dict(info.get("http_headers") or {})
     range_header = request.headers.get("range")
@@ -529,39 +573,46 @@ async def delete_video(video_id: str, request: Request, db: Session = Depends(ge
     video = db.query(Video).filter(Video.video_id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
-    freed = video.file_size or 0
-    if video.video_path:
-        p = Path(video.video_path)
-        if p.exists():
-            freed += p.stat().st_size
+
+    freed = 0
+    locked_files: list[dict[str, str]] = []
+
+    def unlink_artifact(path_value: str | None) -> None:
+        nonlocal freed
+        if not path_value:
+            return
+        p = Path(path_value)
+        if not p.exists():
+            return
+        try:
+            size = p.stat().st_size
             p.unlink(missing_ok=True)
-    if video.audio_path:
-        p = Path(video.audio_path)
-        if p.exists():
-            freed += p.stat().st_size
-            p.unlink(missing_ok=True)
+            freed += size
+        except PermissionError as exc:
+            locked_files.append({"path": str(p), "reason": str(exc) or "文件正被其他程序占用"})
+        except OSError as exc:
+            locked_files.append({"path": str(p), "reason": str(exc) or type(exc).__name__})
+
+    unlink_artifact(video.video_path)
+    unlink_artifact(video.audio_path)
+
     note = db.query(Note).filter(Note.video_id == video.id).first()
     deleted_chunks = 0
     if note:
-        p = Path(note.file_path)
-        if p.exists():
-            p.unlink(missing_ok=True)
+        unlink_artifact(note.file_path)
         deleted_chunks = note.total_chunks or 0
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(MockStore().delete_chunks(str(video.id)))
-    finally:
-        loop.close()
+    await MockStore().delete_chunks(str(video.id))
     db.delete(video)
     db.commit()
     return {
         "code": 0,
-        "message": "success",
+        "message": "partial_success" if locked_files else "success",
         "data": {
             "deleted_video": True,
             "deleted_notes": bool(note),
             "deleted_chunks": deleted_chunks,
             "deleted_vectors": deleted_chunks,
             "freed_space_bytes": freed,
+            "locked_files": locked_files,
         },
     }

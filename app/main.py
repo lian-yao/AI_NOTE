@@ -1,11 +1,14 @@
 """
 FastAPI 应用入口
 """
+import base64
 import time
 import os
+import urllib.parse
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 
 from app.core.config import settings
 from app.core.logger import setup_logger, log_requests
@@ -27,9 +30,11 @@ def _forward_to_ws(event: PipelineEvent):
     """将流水线事件通过 WebSocket 推送给前端。"""
     import asyncio
     try:
-        asyncio.create_task(ws_manager.broadcast(event.task_id, event))
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         pass  # 没有事件循环时静默忽略
+    else:
+        loop.create_task(ws_manager.broadcast(event.task_id, event))
 
 
 @asynccontextmanager
@@ -76,6 +81,56 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/image_proxy")
+async def image_proxy(url: str = Query(..., min_length=1)):
+    """Proxy external cover images so browser CORS/referrer checks do not break covers."""
+    if url.startswith("data:"):
+        header, _, payload = url.partition(",")
+        media_type = header[5:].split(";")[0] or "application/octet-stream"
+        content = (
+            base64.b64decode(payload)
+            if ";base64" in header
+            else urllib.parse.unquote_to_bytes(payload)
+        )
+        return Response(content=content, media_type=media_type)
+
+    if url.startswith(("http://", "https://")):
+        try:
+            async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+                resp = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+                        ),
+                        "Referer": "https://www.bilibili.com/",
+                        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                    },
+                )
+                resp.raise_for_status()
+                content = resp.content
+                if len(content) <= 8 * 1024 * 1024:
+                    media_type = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+                    if media_type.startswith("image/"):
+                        return Response(
+                            content=content,
+                            media_type=media_type,
+                            headers={"Cache-Control": "public, max-age=3600"},
+                        )
+        except Exception:
+            pass
+
+    placeholder = """
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#111827"/>
+  <rect x="80" y="80" width="800" height="380" rx="28" fill="#1f2937"/>
+  <text x="120" y="285" font-family="Arial, sans-serif" font-size="40" fill="#f9fafb">Cover unavailable</text>
+</svg>
+""".strip()
+    return Response(content=placeholder, media_type="image/svg+xml")
 
 
 if __name__ == "__main__":

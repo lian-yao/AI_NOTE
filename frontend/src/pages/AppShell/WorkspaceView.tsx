@@ -324,6 +324,7 @@ function StatusBlock({ task }: { task: Task }) {
   const isSuccess = task.status === 'SUCCESS'
   const label = statusLabel[task.status] || task.status
   const [logs, setLogs] = useState<TaskLogItem[]>([])
+  const retryTask = useTaskStore(state => state.retryTask)
 
   useEffect(() => {
     if (isSuccess) return
@@ -358,9 +359,19 @@ function StatusBlock({ task }: { task: Task }) {
           {label}
         </p>
         <p className="mt-2 text-sm text-neutral-500">
-          {isFailed ? '请检查后端日志或稍后重试。' : '任务正在执行，完成后会自动刷新。'}
+          {isFailed ? task.message || '请检查后端日志或稍后重试。' : '任务正在执行，完成后会自动刷新。'}
         </p>
       </div>
+      {isFailed && (
+        <button
+          type="button"
+          onClick={() => retryTask(task.id)}
+          className="flex items-center gap-1.5 rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-200 transition-colors hover:bg-red-500/20"
+        >
+          <RefreshCcw size={15} />
+          重试生成
+        </button>
+      )}
       {logs.length > 0 && (
         <div className="w-full max-w-xl rounded-xl border border-neutral-800 bg-[#161616] p-4 text-left">
           <div className="mb-3 text-xs font-medium text-neutral-500">后端任务日志</div>

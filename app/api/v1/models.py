@@ -33,15 +33,17 @@ def _ensure_default_enabled_models(db: Session) -> None:
 async def list_models(
     provider_id: Optional[str] = None,
     enabled: bool = True,
+    include_disabled: bool = False,
     db: Session = Depends(get_db),
 ):
-    """List enabled models."""
+    """List persisted models, optionally including disabled rows."""
     _ensure_default_enabled_models(db)
 
     query = db.query(EnabledModel)
     if provider_id:
         query = query.filter(EnabledModel.provider_id == provider_id)
-    query = query.filter(EnabledModel.enabled == enabled)
+    if not include_disabled:
+        query = query.filter(EnabledModel.enabled == enabled)
     models = query.order_by(EnabledModel.created_at.asc(), EnabledModel.id.asc()).all()
     return ApiResponse(data={"items": [enabled_model_to_dict(model) for model in models]})
 

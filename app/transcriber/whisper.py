@@ -7,30 +7,37 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 
 from app.schemas.stage import StageResult
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API.*",
+    category=UserWarning,
+)
 
 
 class FasterWhisperTranscriber:
     """本地 Faster-Whisper 转写器。
 
     支持模型大小: tiny / base / small / medium / large-v3
-    支持设备: auto / cpu / cuda
+    支持设备: cpu / cuda / auto（auto 默认走 CPU，避免 Windows 缺 CUDA 运行库时崩溃）
     """
 
     def __init__(
         self,
         model_size: str = "tiny",
-        device: str = "auto",
+        device: str = "cpu",
         compute_type: str = "auto",
     ):
         """初始化转写器。
 
         Args:
             model_size: 模型大小
-            device: 计算设备（auto 表示有 GPU 则用 GPU）
+            device: 计算设备（auto 会选择 CPU，显式 cuda 才使用 GPU）
             compute_type: 计算精度（auto / float16 / int8_float16 / int8）。
                           auto 时根据设备自动选择：CUDA→float16，CPU→int8
         """
@@ -48,14 +55,8 @@ class FasterWhisperTranscriber:
         """根据设备自动选择合适的计算精度。"""
         if compute_type != "auto":
             return compute_type
-        # auto 模式：检测是否有 CUDA
+        # auto 模式走 CPU，避免检测到 CUDA 但缺少 cuDNN/cuBLAS 时导致进程崩溃。
         if device == "auto":
-            try:
-                import ctranslate2
-                if ctranslate2.get_cuda_device_count() > 0:
-                    return "float16"
-            except Exception:
-                pass
             return "int8"
         if device == "cuda":
             return "float16"
@@ -73,10 +74,8 @@ class FasterWhisperTranscriber:
                 "faster-whisper 未安装。请运行: pip install faster-whisper"
             )
 
-        ct = self._resolve_compute_type(self.device, self.compute_type)
-
-        # 尝试加载，CUDA 库缺失时自动降级为 CPU
-        devices_to_try = [self.device] if self.device != "auto" else ["cuda", "cpu"]
+        # auto 走 CPU；只有用户显式配置 cuda 时才尝试 GPU。
+        devices_to_try = [self.device] if self.device != "auto" else ["cpu"]
         last_error = None
 
         for dev in devices_to_try:

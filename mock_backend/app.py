@@ -719,6 +719,82 @@ async def validate_platform_cookie(platform: str, body: dict[str, Any]) -> dict[
     )
 
 
+@router.post("/platforms/{platform}/qrcode/start")
+async def start_platform_qrcode_login(platform: str) -> dict[str, Any]:
+    key = "mock-qrcode-key"
+    return ok(
+        {
+            "platform": platform,
+            "qrcode_key": key,
+            "url": f"https://account.bilibili.com/h5/account-h5/auth/scan-web?qrcode_key={key}",
+            "expires_in": 180,
+            "poll_interval": 1,
+            "message": "mock 二维码已生成",
+        }
+    )
+
+
+@router.post("/platforms/{platform}/qrcode/poll")
+async def poll_platform_qrcode_login(platform: str, body: dict[str, Any]) -> dict[str, Any]:
+    cookie = store.cookies.get(platform) or "SESSDATA=mock_cookie; bili_jct=mock_csrf"
+    store.cookies[platform] = cookie
+    return ok(
+        {
+            "platform": platform,
+            "qrcode_key": str(body.get("qrcode_key") or "mock-qrcode-key"),
+            "status": "confirmed",
+            "login_code": 0,
+            "cookie": cookie,
+            "saved": True,
+            "valid": True,
+            "is_login": True,
+            "username": "Mock Bilibili 用户",
+            "mid": 10086,
+            "level": 6,
+            "vip_status": 1,
+            "vip_type": 2,
+            "message": "mock 扫码登录成功，Cookie 已保存",
+        }
+    )
+
+
+@router.post("/platforms/{platform}/cookie/import-browser")
+async def import_platform_cookie_from_browser(platform: str, body: dict[str, Any]) -> dict[str, Any]:
+    browser = str(body.get("browser") or "chrome")
+    cookie = store.cookies.get(platform) or "SESSDATA=mock_cookie; bili_jct=mock_csrf"
+    store.cookies[platform] = cookie
+    return ok(
+        {
+            "platform": platform,
+            "browser": browser,
+            "cookie": cookie,
+            "saved": True,
+            "valid": True,
+            "is_login": True,
+            "username": "Mock Bilibili 用户",
+            "mid": 10086,
+            "level": 6,
+            "vip_status": 1,
+            "vip_type": 2,
+            "message": "mock 已同步并保存 Cookie",
+        }
+    )
+
+
+@router.post("/platforms/{platform}/login-browser")
+async def open_platform_login_browser(platform: str, body: dict[str, Any]) -> dict[str, Any]:
+    browser = str(body.get("browser") or "chrome")
+    return ok(
+        {
+            "platform": platform,
+            "browser": browser,
+            "url": "https://passport.bilibili.com/login",
+            "opened": True,
+            "message": f"mock 已用 {browser} 打开登录页",
+        }
+    )
+
+
 @router.get("/network/proxy")
 async def get_proxy() -> dict[str, Any]:
     return ok(store.clone(store.proxy_config))

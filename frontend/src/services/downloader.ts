@@ -28,6 +28,41 @@ export interface DownloaderCookieValidation {
   message?: string | null
 }
 
+export interface DownloaderCookieImportResult extends DownloaderCookieValidation {
+  cookie: string
+  browser?: string
+  saved?: boolean
+}
+
+export interface PlatformLoginOpenResult {
+  platform: string
+  browser?: string
+  url?: string
+  opened: boolean
+  message?: string | null
+}
+
+export interface BilibiliQrCodeSession {
+  platform: string
+  qrcode_key: string
+  url: string
+  expires_in?: number
+  poll_interval?: number
+  message?: string | null
+}
+
+export type BilibiliQrCodeLoginStatus = 'pending' | 'scanned' | 'confirmed' | 'expired' | 'failed'
+
+export interface BilibiliQrCodePollResult extends DownloaderCookieValidation {
+  qrcode_key: string
+  status: BilibiliQrCodeLoginStatus
+  login_code?: number | string | null
+  cookie?: string
+  saved?: boolean
+  refresh_token?: string
+  url?: string
+}
+
 export const getDownloaderCookie = async (
   platform?: string,
   opts?: CallOpts,
@@ -76,6 +111,51 @@ export const validateDownloaderCookie = async (
   return await request.post(
     `/platforms/${encodeURIComponent(data.platform)}/cookie/validate`,
     { cookie: data.cookie },
+    cfg(opts),
+  )
+}
+
+export const importDownloaderCookieFromBrowser = async (
+  data: { browser?: string; platform: string },
+  opts?: CallOpts,
+): Promise<DownloaderCookieImportResult> => {
+  return await request.post(
+    `/platforms/${encodeURIComponent(data.platform)}/cookie/import-browser`,
+    { browser: data.browser, save: true },
+    cfg(opts),
+  )
+}
+
+export const startBilibiliQrCodeLogin = async (
+  platform = 'bilibili',
+  opts?: CallOpts,
+): Promise<BilibiliQrCodeSession> => {
+  return await request.post(
+    `/platforms/${encodeURIComponent(platform)}/qrcode/start`,
+    {},
+    cfg(opts),
+  )
+}
+
+export const pollBilibiliQrCodeLogin = async (
+  data: { platform?: string; qrcode_key: string; save?: boolean },
+  opts?: CallOpts,
+): Promise<BilibiliQrCodePollResult> => {
+  const platform = data.platform || 'bilibili'
+  return await request.post(
+    `/platforms/${encodeURIComponent(platform)}/qrcode/poll`,
+    { qrcode_key: data.qrcode_key, save: data.save !== false },
+    cfg(opts),
+  )
+}
+
+export const openPlatformLoginInBrowser = async (
+  data: { browser?: string; platform: string },
+  opts?: CallOpts,
+): Promise<PlatformLoginOpenResult> => {
+  return await request.post(
+    `/platforms/${encodeURIComponent(data.platform)}/login-browser`,
+    { browser: data.browser },
     cfg(opts),
   )
 }

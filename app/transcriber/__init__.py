@@ -5,10 +5,17 @@
 """
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from typing import Protocol
 
 from app.schemas.stage import StageResult
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API.*",
+    category=UserWarning,
+)
 
 
 class Transcriber(Protocol):

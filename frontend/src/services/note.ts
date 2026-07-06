@@ -151,6 +151,41 @@ function createCompletedResult(data: {
   }
 }
 
+function normalizeCompletedResult(
+  result: TaskStatusResponse['result'] | null | undefined,
+  data: {
+    videoId?: number | string
+    platform?: string
+    title?: string
+  },
+): NonNullable<TaskStatusResponse['result']> {
+  const fallback = createCompletedResult(data)
+  if (!result) return fallback
+
+  return {
+    markdown: result.markdown || fallback.markdown,
+    transcript: {
+      ...fallback.transcript,
+      ...(result.transcript || {}),
+      segments: result.transcript?.segments || fallback.transcript.segments,
+    },
+    audio_meta: {
+      ...fallback.audio_meta,
+      ...(result.audio_meta || {}),
+    },
+  }
+}
+
+const placeholderModelIds = new Set(['backend', 'mock-backend', 'mock-provider', 'preview'])
+
+function realModelSelection(data: GenerateNotePayload): { provider_id?: string; model_name?: string } {
+  const providerId = data.provider_id?.trim()
+  const modelName = data.model_name?.trim()
+  if (!providerId || !modelName) return {}
+  if (placeholderModelIds.has(providerId) || placeholderModelIds.has(modelName)) return {}
+  return { provider_id: providerId, model_name: modelName }
+}
+
 function normalizeGenerateResponse(
   response: GenerateNoteResponse | DirectNoteResponse,
   data: GenerateNotePayload,
@@ -177,8 +212,7 @@ export const generateNote = async (data: GenerateNotePayload): Promise<GenerateN
   const body = {
     url: data.video_url,
     quality: normalizeQuality(data.quality),
-    provider_id: data.provider_id,
-    model_name: data.model_name,
+    ...realModelSelection(data),
     format: normalizeFormat(data),
     style: data.style || 'minimal',
     extras: data.extras,
@@ -213,8 +247,15 @@ export const createNote = async (
 export const delete_task = async ({ video_id }: { video_id: string; platform: string }) => {
   if (!video_id) return null
 
-  const res = await request.delete(`/videos/${encodeURIComponent(video_id)}`)
-  toast.success('任务已成功删除')
+  const res = await request.delete<unknown, {
+    locked_files?: Array<{ path?: string; reason?: string }>
+  }>(`/videos/${encodeURIComponent(video_id)}`)
+  const lockedCount = res?.locked_files?.length || 0
+  if (lockedCount > 0) {
+    toast(`任务已从列表移除，${lockedCount} 个本地文件仍被占用`)
+  } else {
+    toast.success('任务已成功删除')
+  }
   return res
 }
 
@@ -225,8 +266,8 @@ export const get_task_status = async (task_id: string): Promise<TaskStatusRespon
 
   const status = normalizeTaskStatus(response.status)
   const result =
-    status === 'SUCCESS' && !response.result
-      ? createCompletedResult({
+    status === 'SUCCESS'
+      ? normalizeCompletedResult(response.result, {
         videoId: response.video_id,
         platform: '',
       })
