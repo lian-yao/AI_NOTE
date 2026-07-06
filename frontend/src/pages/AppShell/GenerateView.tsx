@@ -572,9 +572,18 @@ export default function GenerateView({
       setBatchUrls('')
       onSubmitted()
     } catch (error) {
-      const msg = error?.response?.data?.error?.message
-        || error?.response?.data?.message
-        || error?.message
+      const apiError = error as {
+        message?: string
+        response?: {
+          data?: {
+            error?: { message?: string }
+            message?: string
+          }
+        }
+      }
+      const msg = apiError.response?.data?.error?.message
+        || apiError.response?.data?.message
+        || apiError.message
         || '提交任务失败，请检查网络连接和后端数据库是否正常'
       toast.error(msg)
       console.error('提交任务失败:', error)

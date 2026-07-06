@@ -8,6 +8,7 @@ export const useTaskPolling = (interval = 3000, enabled = true) => {
   const updateTaskContent = useTaskStore(state => state.updateTaskContent)
 
   const tasksRef = useRef(tasks)
+  const failureCountRef = useRef<Record<string, number>>({})
 
   // 每次 tasks 更新，把最新的 tasks 同步进去
   useEffect(() => {
@@ -29,6 +30,7 @@ export const useTaskPolling = (interval = 3000, enabled = true) => {
         try {
           const res = await get_task_status(task.id)
           const { status } = res
+          failureCountRef.current[task.id] = 0
 
           if (status && status !== task.status) {
             if (status === 'SUCCESS') {
@@ -46,15 +48,19 @@ export const useTaskPolling = (interval = 3000, enabled = true) => {
                 ...(audio_meta !== undefined ? { audioMeta: audio_meta } : {}),
               })
             } else if (status === 'FAILED') {
-              updateTaskContent(task.id, { status })
+              updateTaskContent(task.id, { status, message: res.message || '任务处理失败' })
               console.warn(`⚠️ 任务 ${task.id} 失败`)
             } else {
-              updateTaskContent(task.id, { status })
+              updateTaskContent(task.id, { status, message: res.message || undefined })
             }
           }
         } catch (e) {
           console.error('❌ 任务轮询失败：', e)
-          updateTaskContent(task.id, { status: 'FAILED' })
+          const nextFailureCount = (failureCountRef.current[task.id] || 0) + 1
+          failureCountRef.current[task.id] = nextFailureCount
+          if (nextFailureCount >= 3) {
+            updateTaskContent(task.id, { status: 'FAILED', message: '任务状态查询失败' })
+          }
         }
       }
     }, interval)

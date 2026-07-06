@@ -14,6 +14,7 @@ from typing import Any, Callable
 from app.core.database import SessionLocal
 from app.core.paths import project_path
 from app.core.logger import logger
+from app.models.chunk import Chunk
 from app.models.video import Video
 from app.models.note import Note
 from app.models.task import Task as TaskModel
@@ -95,8 +96,13 @@ ProgressCallback = Callable[[PipelineEvent], None]
 class PipelineTask:
     "单个流水线任务（队列中或运行中）。"
 
-    def __init__(self, source_url: str, options: dict[str, Any] | None = None):
-        self.task_id: str = f"task_{uuid.uuid4().hex[:12]}"
+    def __init__(
+        self,
+        source_url: str,
+        options: dict[str, Any] | None = None,
+        task_id: str | None = None,
+    ):
+        self.task_id: str = task_id or f"task_{uuid.uuid4().hex[:12]}"
         self.source_url: str = source_url
         self.options: dict[str, Any] = options or {}
         self.status: TaskStatus = TaskStatus.PENDING
@@ -104,6 +110,7 @@ class PipelineTask:
         self.progress: int = 0
         self.error: str | None = None
         self.video_id: str | None = None
+        self.video_db_id: int | None = None
         self.note_id: int | None = None
         self._created_at: float = time.time()
         self._cancelled: bool = False
@@ -213,8 +220,17 @@ class PipelineOrchestrator:
 
     async def start_task(self, source_url: str, options: dict[str, Any] | None = None) -> PipelineTask:
         "提交一个视频处理任务，立即返回。"
-        task = PipelineTask(source_url, options)
+        client_task_id = str((options or {}).get("client_task_id") or "").strip()
         async with self._lock:
+            existing = self._tasks.get(client_task_id)
+            reusable_task_id = None
+            if client_task_id.startswith("task_") and (
+                existing is None
+                or existing.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+            ):
+                reusable_task_id = client_task_id
+
+            task = PipelineTask(source_url, options, reusable_task_id)
             self._tasks[task.task_id] = task
         asyncio.create_task(self._run_task(task))
         return task
@@ -245,7 +261,9 @@ class PipelineOrchestrator:
             raise RuntimeError(task.error)
         db = SessionLocal()
         try:
-            note = db.query(Note).filter(Note.video_id == task.note_id).first()
+            note = db.query(Note).filter(Note.id == task.note_id).first() if task.note_id else None
+            if not note and task.video_db_id:
+                note = db.query(Note).filter(Note.video_id == task.video_db_id).first()
             if note:
                 return NoteResponse.model_validate(note)
             raise RuntimeError("Note not found after processing")
@@ -257,6 +275,54 @@ class PipelineOrchestrator:
         context = await self.retriever.retrieve(request.question, request.note_id, request.top_k)
         answer = await self.qa.answer(request.question, context)
         return QAResponse(answer=answer, sources=context)
+
+    def _resolve_task_llm(self, task: PipelineTask, db):
+        "Resolve the LLM for a task, preferring the selected persisted provider/model."
+        provider_id = str(task.options.get("provider_id") or "").strip()
+        model_name = str(task.options.get("model_name") or "").strip()
+        from app.llm.client import get_provider_llm_client
+        from app.models.provider import EnabledModel, LLMProvider
+
+        placeholder_ids = {"backend", "mock-backend", "mock-provider", "preview"}
+        if provider_id in placeholder_ids or model_name in placeholder_ids:
+            provider_id = ""
+            model_name = ""
+
+        if not provider_id and not model_name:
+            enabled_model = (
+                db.query(EnabledModel)
+                .join(LLMProvider, EnabledModel.provider_id == LLMProvider.id)
+                .filter(EnabledModel.enabled.is_(True), LLMProvider.enabled.is_(True))
+                .order_by(EnabledModel.created_at.asc(), EnabledModel.id.asc())
+                .first()
+            )
+            if enabled_model:
+                provider = db.get(LLMProvider, enabled_model.provider_id)
+                if provider and provider.api_key:
+                    return get_provider_llm_client(provider, enabled_model.model_name)
+            return self.llm
+
+        if not provider_id or not model_name:
+            raise RuntimeError("Provider 和模型名称必须同时提供")
+
+        provider = db.get(LLMProvider, provider_id)
+        if not provider:
+            raise RuntimeError(f"Provider 不存在: {provider_id}")
+        if not provider.enabled:
+            raise RuntimeError(f"Provider 已禁用: {provider_id}")
+
+        enabled_model = (
+            db.query(EnabledModel)
+            .filter(
+                EnabledModel.provider_id == provider_id,
+                EnabledModel.model_name == model_name,
+            )
+            .first()
+        )
+        if not enabled_model or not enabled_model.enabled:
+            raise RuntimeError(f"模型未启用: {model_name}")
+
+        return get_provider_llm_client(provider, model_name)
 
     async def _run_task(self, task: PipelineTask) -> None:
         "在并发控制下运行完整流水线。"
@@ -276,13 +342,34 @@ class PipelineOrchestrator:
             except TaskCancelledError:
                 logger.warning(f"任务 {task.task_id} 被取消")
                 pass
+            except asyncio.CancelledError:
+                task.status = TaskStatus.CANCELLED
+                task.error = "任务被中断，可能是后端重载或进程退出"
+                db.rollback()
+                try:
+                    if task.current_stage:
+                        self._sync_task_model(task, task.current_stage, "failed", db)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                raise
             except Exception as e:
                 task.status = TaskStatus.FAILED
-                task.error = str(e)
+                task.error = str(e) or f"{type(e).__name__}: {e!r}"
                 stage_name = task.current_stage.label() if task.current_stage else "未知"
                 logger.exception(f"任务 {task.task_id} 在阶段 [{stage_name}] 失败: {e}")
-                self._emit(PipelineEvent(event="error", task_id=task.task_id, video_id=task.video_id or "", stage=task.current_stage.value if task.current_stage else "", status="failed", progress=task.progress, message=str(e)))
                 db.rollback()
+                try:
+                    if task.video_id:
+                        video = db.query(Video).filter(Video.video_id == task.video_id).first()
+                        if video:
+                            video.status = "failed"
+                    if task.current_stage:
+                        self._sync_task_model(task, task.current_stage, "failed", db)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                self._emit(PipelineEvent(event="error", task_id=task.task_id, video_id=task.video_id or "", stage=task.current_stage.value if task.current_stage else "", status="failed", progress=task.progress, message=task.error or str(e)))
             finally:
                 db.close()
 
@@ -305,7 +392,7 @@ class PipelineOrchestrator:
             existing = db.query(Video).filter(Video.video_id == video_id).first()
             if existing:
                 task.video_id = existing.video_id
-                task.note_id = existing.id
+                task.video_db_id = existing.id
             else:
                 video = Video(
                     video_id=video_id,
@@ -323,7 +410,7 @@ class PipelineOrchestrator:
                 db.add(video)
                 db.flush()
                 task.video_id = video.video_id
-                task.note_id = video.id
+                task.video_db_id = video.id
 
         elif stage == PipelineStage.DOWNLOAD:
             video_dir = task.options.get("video_dir", "")
@@ -356,7 +443,7 @@ class PipelineOrchestrator:
 
             audio_result = await self.video_processor.extract_audio(video_dir, on_audio_progress)
             if not audio_result.success:
-                raise RuntimeError(audio_result.error)
+                raise RuntimeError(audio_result.error or "音频提取失败，未返回错误详情")
 
             audio_path = audio_result.artifacts.get("audio_path", "")
 
@@ -366,7 +453,7 @@ class PipelineOrchestrator:
 
             transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
             if not transcribe_result.success:
-                raise RuntimeError(transcribe_result.error)
+                raise RuntimeError(transcribe_result.error or "语音转写失败，未返回错误详情")
 
             # 保存转写结果到 task.options，供 GENERATE 阶段使用
             full_text = transcribe_result.metadata.get("full_text", "")
@@ -409,7 +496,8 @@ class PipelineOrchestrator:
                 transcript_text = "这是模拟转录文本。"
 
             from app.note.generator import NoteGenerator
-            note_gen = NoteGenerator(llm=self.llm)
+            task_llm = self._resolve_task_llm(task, db)
+            note_gen = NoteGenerator(llm=task_llm)
             note_result = await note_gen.generate(
                 transcript_text,
                 {"title": task.options.get("video_dir", "").split("/")[-1] if not task.video_id else task.video_id,
@@ -480,6 +568,7 @@ class PipelineOrchestrator:
             self._sync_progress(task, stage, 100)
 
         self._sync_task_model(task, stage, "completed", db)
+        db.commit()
 
     def _calc_progress(self, stage: PipelineStage, stage_progress: int) -> int:
         "计算总体进度百分比。"
@@ -499,18 +588,27 @@ class PipelineOrchestrator:
                 return
             tid = f"{task.task_id}_{stage.value}"
             t = db.query(TaskModel).filter(TaskModel.task_id == tid, TaskModel.type == stage.value).first()
+            progress = task.progress if status == "running" else 100
+            error_message = task.error if status == "failed" else None
             if not t:
-                t = TaskModel(task_id=tid, video_id=task.note_id or 0, type=stage.value, status=status, progress=0 if status == "running" else 100)
+                t = TaskModel(
+                    task_id=tid,
+                    video_id=task.video_db_id or task.note_id or 0,
+                    type=stage.value,
+                    status=status,
+                    progress=progress,
+                    error_message=error_message,
+                )
                 db.add(t)
             else:
                 t.status = status
-                t.progress = task.progress if status == "running" else 100
+                t.progress = progress
                 if status == "running" and not t.started_at:
                     t.started_at = datetime.utcnow()
                 elif status == "completed":
                     t.completed_at = datetime.utcnow()
                 elif status == "failed":
-                    t.error_message = task.error
+                    t.error_message = error_message
             db.flush()
         except Exception as e:
             logger.error(f"同步任务模型失败 ({task.task_id}_{stage.value}): {e}")

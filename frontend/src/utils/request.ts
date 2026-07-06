@@ -7,6 +7,9 @@ export interface IResponse<T = unknown> {
   message?: string
   msg?: string
   detail?: string
+  error?: {
+    message?: string
+  }
   status?: number
   statusCode?: number
   data: T

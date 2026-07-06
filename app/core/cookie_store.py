@@ -17,12 +17,39 @@ _cache: dict[str, str] | None = None
 
 
 def _load() -> dict[str, str]:
+    data: dict[str, str] = {}
     if not os.path.isfile(_PERSIST_FILE):
-        return {}
+        return _load_legacy_frontend_cookies()
     try:
         with open(_PERSIST_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = {str(k): str(v) for k, v in loaded.items() if isinstance(v, str)}
     except (json.JSONDecodeError, OSError):
+        data = {}
+
+    for platform, cookie in _load_legacy_frontend_cookies().items():
+        data.setdefault(platform, cookie)
+
+    return data
+
+
+def _load_legacy_frontend_cookies() -> dict[str, str]:
+    """读取旧 frontend_config.json 中保存的平台 Cookie，兼容早期设置页路径。"""
+    try:
+        from app.core.config import settings
+
+        legacy_file = Path(settings.data_dir) / "frontend_config.json"
+        if not legacy_file.is_file():
+            return {}
+
+        raw = json.loads(legacy_file.read_text(encoding="utf-8"))
+        cookies = raw.get("cookies") if isinstance(raw, dict) else None
+        if not isinstance(cookies, dict):
+            return {}
+
+        return {str(k): str(v) for k, v in cookies.items() if isinstance(v, str)}
+    except Exception:
         return {}
 
 

@@ -12,6 +12,7 @@ import {
 } from 'react'
 import { toast } from 'react-hot-toast'
 import {
+  AlertTriangle,
   ArrowLeftRight,
   Bot,
   CheckCircle2,
@@ -19,10 +20,12 @@ import {
   Copy,
   Download,
   Eye,
+  ExternalLink,
   FileText,
   Loader2,
-  Maximize,
   MessageSquare,
+  Maximize2,
+  Pause,
   PenSquare,
   Play,
   Plus,
@@ -32,7 +35,6 @@ import {
   Subtitles,
   Undo2,
   Video,
-  Volume2,
   X,
 } from 'lucide-react'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
@@ -40,6 +42,7 @@ import { cn } from '@/lib/utils'
 import type { Task } from '@/store/taskStore'
 import { useTaskStore } from '@/store/taskStore'
 import { getTaskLogs, type TaskLogItem } from '@/services/task'
+import { resolveVideoPlayer, type VideoPlayerSource } from '@/services/video'
 import {
   formatDate,
   formatTime,
@@ -76,6 +79,10 @@ const statusLabel: Record<string, string> = {
   FAILED: '生成失败',
   RUNNING: '处理中',
 }
+
+const PREVIEW_VIDEO_SOURCE_URL = 'https://www.bilibili.com/video/BV1aeLqzUE6L/'
+const PREVIEW_VIDEO_BVID = 'BV1aeLqzUE6L'
+const PREVIEW_VIDEO_EMBED_URL = `https://player.bilibili.com/player.html?bvid=${PREVIEW_VIDEO_BVID}&page=1&high_quality=1&autoplay=0`
 
 function getStatusDotClass(status: Task['status']) {
   if (status === 'SUCCESS') return 'bg-primary'
@@ -120,13 +127,22 @@ function createPreviewTask(
       duration: 360,
       file_path: '',
       platform: 'bilibili',
-      raw_info: { uploader: '示例作者' },
+      source_url: PREVIEW_VIDEO_SOURCE_URL,
+      player_url: PREVIEW_VIDEO_SOURCE_URL,
+      embed_url: PREVIEW_VIDEO_EMBED_URL,
+      raw_info: {
+        uploader: '示例作者',
+        bvid: PREVIEW_VIDEO_BVID,
+        source_url: PREVIEW_VIDEO_SOURCE_URL,
+        player_url: PREVIEW_VIDEO_SOURCE_URL,
+        embed_url: PREVIEW_VIDEO_EMBED_URL,
+      },
       title,
       video_id: id,
     },
     createdAt,
     formData: {
-      video_url: `preview://${id}`,
+      video_url: PREVIEW_VIDEO_SOURCE_URL,
       link: true,
       screenshot: false,
       platform: 'bilibili',
@@ -308,6 +324,7 @@ function StatusBlock({ task }: { task: Task }) {
   const isSuccess = task.status === 'SUCCESS'
   const label = statusLabel[task.status] || task.status
   const [logs, setLogs] = useState<TaskLogItem[]>([])
+  const retryTask = useTaskStore(state => state.retryTask)
 
   useEffect(() => {
     if (isSuccess) return
@@ -342,9 +359,19 @@ function StatusBlock({ task }: { task: Task }) {
           {label}
         </p>
         <p className="mt-2 text-sm text-neutral-500">
-          {isFailed ? '请检查后端日志或稍后重试。' : '任务正在执行，完成后会自动刷新。'}
+          {isFailed ? task.message || '请检查后端日志或稍后重试。' : '任务正在执行，完成后会自动刷新。'}
         </p>
       </div>
+      {isFailed && (
+        <button
+          type="button"
+          onClick={() => retryTask(task.id)}
+          className="flex items-center gap-1.5 rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-200 transition-colors hover:bg-red-500/20"
+        >
+          <RefreshCcw size={15} />
+          重试生成
+        </button>
+      )}
       {logs.length > 0 && (
         <div className="w-full max-w-xl rounded-xl border border-neutral-800 bg-[#161616] p-4 text-left">
           <div className="mb-3 text-xs font-medium text-neutral-500">后端任务日志</div>
@@ -1138,6 +1165,505 @@ function SummaryContent({ task }: { task: Task }) {
   )
 }
 
+function valueFromRecord(value: unknown, key: string): string {
+  if (!value || typeof value !== 'object') return ''
+  const item = (value as Record<string, unknown>)[key]
+  return typeof item === 'string' ? item : ''
+}
+
+function nestedValueFromRecord(value: unknown, parentKey: string, childKey: string): string {
+  if (!value || typeof value !== 'object') return ''
+  const parent = (value as Record<string, unknown>)[parentKey]
+  if (!parent || typeof parent !== 'object') return ''
+  const item = (parent as Record<string, unknown>)[childKey]
+  return typeof item === 'string' ? item : ''
+}
+
+function extractBvid(value: string): string {
+  return value.match(/BV[0-9A-Za-z]{10}/)?.[0] || ''
+}
+
+function isBackendVideoId(value: string): boolean {
+  return /^b_BV[0-9A-Za-z]{10}$/.test(value) || /^av_\d+$/.test(value)
+}
+
+function getTaskSourceUrl(task: Task | null): string {
+  if (!task) return ''
+  return (
+    task.audioMeta?.source_url ||
+    valueFromRecord(task.audioMeta?.raw_info, 'source_url') ||
+    nestedValueFromRecord(task.audioMeta?.raw_info, 'backend_video', 'source_url') ||
+    nestedValueFromRecord(task.audioMeta?.raw_info, 'backend_video', 'url') ||
+    task.formData?.video_url ||
+    ''
+  )
+}
+
+function getTaskVideoId(task: Task | null): string {
+  if (!task) return ''
+  const rawInfo = task.audioMeta?.raw_info
+  const candidates = [
+    task.audioMeta?.video_id,
+    valueFromRecord(rawInfo, 'video_id'),
+    nestedValueFromRecord(rawInfo, 'backend_video', 'video_id'),
+    task.id,
+  ].filter(Boolean) as string[]
+
+  for (const candidate of candidates) {
+    if (isBackendVideoId(candidate)) return candidate
+  }
+
+  for (const candidate of candidates) {
+    const bvid = extractBvid(candidate)
+    if (bvid) return `b_${bvid}`
+  }
+
+  const bvid = getTaskBvid(task)
+  return bvid ? `b_${bvid}` : ''
+}
+
+function getTaskBvid(task: Task | null): string {
+  if (!task) return ''
+  const sourceUrl = getTaskSourceUrl(task)
+  return (
+    valueFromRecord(task.audioMeta?.raw_info, 'bvid') ||
+    nestedValueFromRecord(task.audioMeta?.raw_info, 'backend_video', 'bvid') ||
+    extractBvid(sourceUrl) ||
+    ''
+  )
+}
+
+function getTaskEmbedUrl(task: Task | null): string {
+  if (!task) return ''
+  const savedEmbed =
+    task.audioMeta?.embed_url ||
+    valueFromRecord(task.audioMeta?.raw_info, 'embed_url') ||
+    nestedValueFromRecord(task.audioMeta?.raw_info, 'backend_video', 'embed_url')
+  if (savedEmbed) return savedEmbed
+
+  const bvid = getTaskBvid(task)
+  if (!bvid) return ''
+
+  return `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(
+    bvid
+  )}&page=1&high_quality=1&autoplay=0`
+}
+
+function isBilibiliSource(value: string): boolean {
+  return /(^https?:\/\/)?([^/]+\.)?(bilibili\.com|b23\.tv)\//i.test(value)
+}
+
+function playerErrorMessage(error: unknown): string {
+  if (!error || typeof error !== 'object') return '视频播放地址解析失败'
+  const record = error as Record<string, unknown>
+  const detail = record.detail || record.message || record.msg
+  return typeof detail === 'string' ? detail : '视频播放地址解析失败'
+}
+
+function isPlayerAuthError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const record = error as Record<string, unknown>
+  return (
+    record.status === 401 ||
+    record.statusCode === 401 ||
+    record.status === 403 ||
+    record.statusCode === 403
+  )
+}
+
+function formatPlayerTime(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '0:00'
+  const total = Math.floor(value)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+function TaskVideoPlayer({
+  task,
+  title,
+  coverUrl,
+}: {
+  task: Task
+  title: string
+  coverUrl: string
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [playerSource, setPlayerSource] = useState<VideoPlayerSource | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [playerMode, setPlayerMode] = useState<'native' | 'embed'>('native')
+  const [playing, setPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const [subtitlesVisible, setSubtitlesVisible] = useState(true)
+  const [reloadKey, setReloadKey] = useState(0)
+  const sourceUrl = getTaskSourceUrl(task)
+  const videoId = getTaskVideoId(task)
+  const fallbackEmbedUrl = getTaskEmbedUrl(task)
+  const embedUrl = playerSource?.embed_url || fallbackEmbedUrl
+  const posterUrl = playerSource?.cover_url || coverUrl
+  const streamUrl = playerSource?.local_stream_url || playerSource?.stream_url || ''
+  const quality = task.formData?.quality || '1080p'
+  const segments = useMemo(() => task.transcript?.segments || [], [task.transcript?.segments])
+  const knownDuration = duration || playerSource?.duration_seconds || task.audioMeta?.duration || 0
+  const activeSegment = useMemo(() => {
+    return segments.find(segment => currentTime >= segment.start && currentTime < segment.end) || null
+  }, [currentTime, segments])
+  const timelineMarkers = useMemo(() => {
+    const chapters = task.audioMeta?.chapters || []
+    if (chapters.length > 0) {
+      return chapters
+        .map((chapter, index) => ({
+          key: `chapter-${index}`,
+          title: chapter.title || `章节 ${index + 1}`,
+          time: Number(chapter.start_time || 0),
+        }))
+        .filter(marker => marker.time >= 0)
+    }
+
+    return segments
+      .filter((_, index) => index % 8 === 0)
+      .slice(0, 28)
+      .map((segment, index) => ({
+        key: `segment-${index}`,
+        title: segment.text,
+        time: segment.start,
+      }))
+  }, [segments, task.audioMeta?.chapters])
+
+  useEffect(() => {
+    let cancelled = false
+
+    setPlayerSource(null)
+    setError('')
+    setPlayerMode('native')
+    setCurrentTime(0)
+    setDuration(0)
+    setPlaying(false)
+
+    if (!sourceUrl) {
+      setError('当前笔记缺少视频链接')
+      return
+    }
+
+    if (!isBilibiliSource(sourceUrl)) {
+      setError('当前内置播放器暂只支持 Bilibili 链接')
+      return
+    }
+
+    setLoading(true)
+    resolveVideoPlayer(sourceUrl, quality, videoId, { silent: true })
+      .then(data => {
+        if (cancelled) return
+        setPlayerSource(data)
+        const hasNativeSource = Boolean(data.local_stream_url || data.stream_url)
+        setPlayerMode(hasNativeSource ? 'native' : 'embed')
+        if (!hasNativeSource && !(data.embed_url || fallbackEmbedUrl)) {
+          setError('暂无可播放视频源')
+        }
+      })
+      .catch(err => {
+        if (cancelled) return
+        setError(playerErrorMessage(err))
+        setPlayerMode(!isPlayerAuthError(err) && fallbackEmbedUrl ? 'embed' : 'native')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [fallbackEmbedUrl, quality, reloadKey, sourceUrl, videoId])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    video.playbackRate = playbackRate
+  }, [playbackRate, streamUrl])
+
+  const handleRetry = () => {
+    setReloadKey(value => value + 1)
+  }
+
+  const togglePlay = () => {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) {
+      void video.play()
+    } else {
+      video.pause()
+    }
+  }
+
+  const seekTo = (value: number) => {
+    const video = videoRef.current
+    if (!video) return
+    video.currentTime = value
+    setCurrentTime(value)
+  }
+
+  const requestFullscreen = () => {
+    const host = videoRef.current?.parentElement
+    if (host?.requestFullscreen) {
+      void host.requestFullscreen()
+    }
+  }
+
+  const canUseNative = Boolean(streamUrl)
+  const canUseEmbed = Boolean(embedUrl)
+  const canShowEmbed = playerMode === 'embed' && canUseEmbed
+  const canShowVideo = playerMode === 'native' && canUseNative
+
+  return (
+    <div className="relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black">
+      <div className="absolute top-3 left-3 z-20 flex items-center gap-1 rounded-full bg-black/70 p-1 text-xs text-neutral-200 backdrop-blur-sm">
+        <button
+          type="button"
+          onClick={() => setPlayerMode('native')}
+          disabled={!canUseNative}
+          className={`rounded-full px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+            playerMode === 'native' ? 'bg-neutral-100 text-neutral-950' : 'hover:bg-neutral-800'
+          }`}
+        >
+          本地
+        </button>
+        <button
+          type="button"
+          onClick={() => setPlayerMode('embed')}
+          disabled={!canUseEmbed}
+          className={`rounded-full px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+            playerMode === 'embed' ? 'bg-neutral-100 text-neutral-950' : 'hover:bg-neutral-800'
+          }`}
+        >
+          B站
+        </button>
+      </div>
+
+      {canShowEmbed ? (
+        <iframe
+          key={embedUrl}
+          src={embedUrl}
+          title={title}
+          allow="autoplay; fullscreen; picture-in-picture"
+          allowFullScreen
+          referrerPolicy="no-referrer-when-downgrade"
+          className="h-full w-full border-0 bg-black"
+        />
+      ) : canShowVideo ? (
+        <>
+          <video
+            ref={videoRef}
+            key={`${streamUrl}-${reloadKey}`}
+            src={streamUrl}
+            poster={posterUrl || undefined}
+            preload="metadata"
+            playsInline
+            className="h-full w-full bg-black object-contain"
+            onClick={togglePlay}
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onLoadedMetadata={event => {
+              const mediaDuration = event.currentTarget.duration
+              setDuration(Number.isFinite(mediaDuration) ? mediaDuration : 0)
+              event.currentTarget.playbackRate = playbackRate
+            }}
+            onTimeUpdate={event => setCurrentTime(event.currentTarget.currentTime)}
+            onError={() => {
+              setError('本地播放器加载失败，可切换到 B 站播放器兜底')
+              if (embedUrl) setPlayerMode('embed')
+            }}
+          />
+
+          {!playing && (
+            <button
+              type="button"
+              onClick={togglePlay}
+              className="absolute left-1/2 top-1/2 z-10 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
+              aria-label="播放"
+            >
+              <Play size={30} fill="currentColor" />
+            </button>
+          )}
+
+          {subtitlesVisible && activeSegment && (
+            <div className="pointer-events-none absolute inset-x-6 bottom-20 z-10 flex justify-center">
+              <div className="max-w-full rounded-lg bg-black/72 px-3 py-2 text-center text-sm leading-relaxed text-white shadow-2xl backdrop-blur-sm">
+                {activeSegment.text}
+              </div>
+            </div>
+          )}
+
+          <div className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-3 pb-3 pt-12">
+            <div className="relative mb-2 h-5">
+              <div className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/18" />
+              {knownDuration > 0 &&
+                timelineMarkers.map(marker => {
+                  const left = Math.min(100, Math.max(0, (marker.time / knownDuration) * 100))
+                  return (
+                    <button
+                      key={marker.key}
+                      type="button"
+                      onClick={() => seekTo(marker.time)}
+                      className="absolute top-1/2 z-10 h-3 w-1 -translate-y-1/2 rounded-full bg-emerald-300/80 transition-transform hover:scale-y-125"
+                      style={{ left: `${left}%` }}
+                      title={`${formatPlayerTime(marker.time)} ${marker.title}`}
+                      aria-label={`跳转到 ${formatPlayerTime(marker.time)}`}
+                    />
+                  )
+                })}
+              <input
+                type="range"
+                min={0}
+                max={Math.max(knownDuration, currentTime, 1)}
+                step={0.1}
+                value={currentTime}
+                onChange={event => seekTo(Number(event.target.value))}
+                className="absolute inset-x-0 top-1/2 h-5 -translate-y-1/2 cursor-pointer appearance-none bg-transparent accent-emerald-300"
+                aria-label="视频进度"
+              />
+            </div>
+            <div className="flex items-center gap-2 text-xs text-neutral-100">
+              <button
+                type="button"
+                onClick={togglePlay}
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 transition-colors hover:bg-white/20"
+                aria-label={playing ? '暂停' : '播放'}
+              >
+                {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+              </button>
+              <span className="min-w-[74px] font-mono text-[11px] text-neutral-200">
+                {formatPlayerTime(currentTime)} / {formatPlayerTime(knownDuration)}
+              </span>
+              <div className="ml-auto flex items-center gap-1">
+                {[0.75, 1, 1.25, 1.5, 2].map(rate => (
+                  <button
+                    key={rate}
+                    type="button"
+                    onClick={() => setPlaybackRate(rate)}
+                    className={`rounded-md px-2 py-1 text-[11px] transition-colors ${
+                      playbackRate === rate ? 'bg-white text-black' : 'bg-white/10 hover:bg-white/20'
+                    }`}
+                  >
+                    {rate}x
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setSubtitlesVisible(value => !value)}
+                  className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                    subtitlesVisible ? 'bg-white text-black' : 'bg-white/10 hover:bg-white/20'
+                  }`}
+                  title={subtitlesVisible ? '隐藏字幕' : '显示字幕'}
+                  aria-label={subtitlesVisible ? '隐藏字幕' : '显示字幕'}
+                >
+                  <Subtitles size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={requestFullscreen}
+                  className="flex h-7 w-7 items-center justify-center rounded-md bg-white/10 transition-colors hover:bg-white/20"
+                  title="全屏"
+                  aria-label="全屏"
+                >
+                  <Maximize2 size={15} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center bg-neutral-950">
+          {posterUrl ? (
+            <img
+              src={posterUrl}
+              alt={title}
+              referrerPolicy="no-referrer"
+              className="absolute inset-0 h-full w-full object-cover opacity-45"
+            />
+          ) : null}
+          <div className="relative z-10 flex flex-col items-center text-neutral-400">
+            {loading ? (
+              <>
+                <Loader2 className="mb-2 h-6 w-6 animate-spin text-neutral-300" />
+                <span className="text-xs">正在解析播放地址</span>
+              </>
+            ) : (
+              <>
+                <Video size={32} className="mb-2 opacity-45" />
+                <span className="text-xs">暂无可播放视频源</span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {loading && (canShowVideo || canShowEmbed) && (
+        <div className="absolute top-3 left-3 flex items-center gap-2 rounded-full bg-black/70 px-2.5 py-1 text-xs text-neutral-100 backdrop-blur-sm">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          解析中
+        </div>
+      )}
+
+      {!loading && (playerSource?.height || playerSource?.ext) && !canShowEmbed && (
+        <div className="absolute top-3 left-[108px] z-20 rounded-full bg-black/70 px-2.5 py-1 text-xs text-neutral-100 backdrop-blur-sm">
+          {[playerSource.height ? `${playerSource.height}p` : '', playerSource.ext?.toUpperCase()]
+            .filter(Boolean)
+            .join(' · ')}
+        </div>
+      )}
+
+      {sourceUrl && (
+        <a
+          href={sourceUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="absolute top-3 right-3 flex h-8 w-8 items-center justify-center rounded-full bg-black/70 text-neutral-200 backdrop-blur-sm transition-colors hover:bg-neutral-800 hover:text-white"
+          title="打开原视频"
+          aria-label="打开原视频"
+        >
+          <ExternalLink size={15} />
+        </a>
+      )}
+
+      {error && !canShowEmbed && (
+        <div className="absolute inset-x-4 bottom-4 rounded-lg border border-neutral-700/80 bg-[#111111]/95 p-3 text-sm text-neutral-200 shadow-2xl backdrop-blur">
+          <div className="flex gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+            <div className="min-w-0 flex-1">
+              <p className="line-clamp-2 text-xs leading-5 text-neutral-300">{error}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  className="rounded-md border border-neutral-700 px-2 py-1 text-xs text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-800"
+                >
+                  重试
+                </button>
+                {embedUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setPlayerMode('embed')}
+                    className="rounded-md border border-neutral-700 px-2 py-1 text-xs text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-800"
+                  >
+                    使用 B 站播放器
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function VideoChatPanel({
   task,
   mode,
@@ -1154,7 +1680,6 @@ function VideoChatPanel({
   const title = getTaskTitle(task)
   const author = getTaskAuthor(task)
   const createdAt = formatDate(task?.createdAt)
-  const duration = formatTime(task?.audioMeta?.duration)
   const taskId = task?.id
   const taskStatus = task?.status
   const isPreviewTask = task?.formData.provider_id === 'preview'
@@ -1240,37 +1765,7 @@ function VideoChatPanel({
     <div className="flex h-full flex-col bg-[#111111]">
       {showVideoArea && (
         <>
-          <div className="relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black">
-            <div className="absolute inset-0 flex items-center justify-center bg-neutral-900">
-              {coverUrl ? (
-                <img
-                  src={coverUrl}
-                  alt={title}
-                  referrerPolicy="no-referrer"
-                  className="h-full w-full object-cover opacity-70"
-                />
-              ) : (
-                <div className="flex flex-col items-center text-neutral-600">
-                  <Video size={32} className="mb-2 opacity-30" />
-                  <span className="text-xs">暂无画面</span>
-                </div>
-              )}
-            </div>
-            <div className="absolute right-0 bottom-0 left-0 flex h-12 items-center justify-between bg-gradient-to-t from-black/80 to-transparent px-4">
-              <div className="flex items-center gap-4 text-white">
-                <Play size={18} fill="currentColor" />
-                <div className="flex items-center gap-2 text-xs font-medium">
-                  <span>00:00</span>
-                  <span>/</span>
-                  <span>{duration}</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-4 text-white">
-                <Volume2 size={18} />
-                <Maximize size={18} />
-              </div>
-            </div>
-          </div>
+          <TaskVideoPlayer task={task} title={title} coverUrl={coverUrl} />
 
           <div className="shrink-0 border-b border-neutral-800 p-4">
             <div className="mb-2 flex items-center justify-between gap-4">

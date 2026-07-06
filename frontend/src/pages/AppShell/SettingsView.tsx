@@ -15,6 +15,7 @@ import {
   Loader2,
   Power,
   Plus,
+  QrCode,
   RefreshCcw,
   Save,
   Search,
@@ -24,6 +25,7 @@ import {
   Video as VideoIcon,
   X,
 } from 'lucide-react'
+import { QRCode as AntQRCode } from 'antd'
 import toast from 'react-hot-toast'
 import type { IProvider } from '@/types'
 import { useSystemStore, type CacheDirectoryKey, type StoragePathConfig } from '@/store/configStore'
@@ -34,11 +36,20 @@ import {
   deleteModelById,
   deleteProviderById,
   fetchModels,
-  fetchEnableModelById,
+  fetchProviderModelRowsById,
   testConnection,
   updateProviderById,
 } from '@/services/model'
-import { getDownloaderCookie, updateDownloaderCookie } from '@/services/downloader'
+import {
+  getDownloaderCookie,
+  pollBilibiliQrCodeLogin,
+  startBilibiliQrCodeLogin,
+  updateDownloaderCookie,
+  validateDownloaderCookie,
+  type BilibiliQrCodePollResult,
+  type BilibiliQrCodeSession,
+  type DownloaderCookieValidation,
+} from '@/services/downloader'
 import { getProxyConfig, updateProxyConfig, type ProxyConfig } from '@/services/proxy'
 import {
   downloadModel,
@@ -562,12 +573,13 @@ function ProviderSection() {
 
   const refreshEnabledModels = async (providerId: string) => {
     try {
-      const models = await fetchEnableModelById(providerId, { silent: true })
+      const models = await fetchProviderModelRowsById(providerId, { silent: true })
       setEnabledModelsByProvider(prev => ({
         ...prev,
         [providerId]: Array.isArray(models) ? models.map(model => ({
           id: model.id,
           model_name: model.model_name,
+          enabled: model.enabled !== false,
         })) : [],
       }))
     } catch {
@@ -592,7 +604,7 @@ function ProviderSection() {
 
   const handleToggleModel = async (providerId: string, modelName: string) => {
     const enabledModel = enabledModelsByProvider[providerId]?.find(
-      model => model.model_name === modelName,
+      model => model.model_name === modelName && model.enabled !== false,
     )
     const toggleKey = `${providerId}:${modelName}`
     setTogglingModelKey(toggleKey)
@@ -611,7 +623,9 @@ function ProviderSection() {
   }
 
   const handleTestProvider = async (providerId: string) => {
-    const firstModel = enabledModelsByProvider[providerId]?.[0]?.model_name
+    const firstModel = enabledModelsByProvider[providerId]?.find(
+      model => model.enabled !== false,
+    )?.model_name
     if (!firstModel) {
       toast.error('请先启用至少一个聊天模型')
       return
@@ -715,7 +729,7 @@ function ProviderSection() {
           const chatModels = mergedModels.filter(model => !isEmbeddingModel(model.id))
           const embeddingModels = mergedModels.filter(model => isEmbeddingModel(model.id))
           const loadingModels = modelLoadingByProvider[provider.id] === true
-          const enabledCount = enabledModels.length
+          const enabledCount = enabledModels.filter(model => model.enabled !== false).length
 
           return (
             <div
@@ -804,7 +818,7 @@ function ProviderSection() {
                       <button
                         type="button"
                         onClick={() => handleTestProvider(provider.id)}
-                        disabled={testingProviderId === provider.id || enabledModels.length === 0}
+                        disabled={testingProviderId === provider.id || enabledCount === 0}
                         className="flex h-9 items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-800 px-3 text-xs font-medium text-neutral-200 transition-colors hover:bg-neutral-700 disabled:opacity-50"
                       >
                         {testingProviderId === provider.id ? (
@@ -860,7 +874,7 @@ function ProviderSection() {
   )
 }
 
-type SavedModel = { id: string | number; model_name: string }
+type SavedModel = { id: string | number; model_name: string; enabled?: boolean }
 type RemoteModel = {
   id: string
   displayName: string
@@ -1064,7 +1078,9 @@ function ModelTable({
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const [searchText, setSearchText] = useState('')
-  const enabledSet = new Set(enabledModels.map(model => model.model_name))
+  const enabledSet = new Set(
+    enabledModels.filter(model => model.enabled !== false).map(model => model.model_name),
+  )
   const normalizedSearchText = searchText.trim().toLowerCase()
   const filteredModels = useMemo(() => {
     if (!normalizedSearchText) return models
@@ -1172,6 +1188,12 @@ function ModelTable({
 function DownloaderSection() {
   const [cookie, setCookie] = useState('')
   const [cookieLoading, setCookieLoading] = useState(true)
+  const [cookieValidating, setCookieValidating] = useState(false)
+  const [qrStarting, setQrStarting] = useState(false)
+  const [qrPolling, setQrPolling] = useState(false)
+  const [qrSession, setQrSession] = useState<BilibiliQrCodeSession | null>(null)
+  const [qrStatus, setQrStatus] = useState<BilibiliQrCodePollResult | null>(null)
+  const [cookieValidation, setCookieValidation] = useState<DownloaderCookieValidation | null>(null)
   const [proxy, setProxy] = useState<ProxyConfig | null>(null)
   const [proxyDraft, setProxyDraft] = useState({ enabled: false, url: '' })
   const [platformLoadFailed, setPlatformLoadFailed] = useState(false)
@@ -1203,9 +1225,106 @@ function DownloaderSection() {
     load()
   }, [])
 
+  useEffect(() => {
+    if (!qrSession?.qrcode_key) return
+
+    let cancelled = false
+    let timer: number | undefined
+    const intervalMs = Math.max(1, qrSession.poll_interval || 2) * 1000
+
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(poll, delay)
+    }
+
+    const poll = async () => {
+      setQrPolling(true)
+      try {
+        const result = await pollBilibiliQrCodeLogin(
+          { platform: 'bilibili', qrcode_key: qrSession.qrcode_key, save: true },
+          { silent: true },
+        )
+        if (cancelled) return
+
+        setQrStatus(result)
+        if (result.status === 'confirmed') {
+          if (result.cookie) {
+            setCookie(result.cookie)
+          }
+          setCookieValidation(result)
+          toast.success(result.saved ? 'Bilibili 扫码登录成功，Cookie 已保存' : 'Bilibili 扫码已确认')
+          return
+        }
+
+        if (result.status === 'expired') {
+          toast.error(result.message || '二维码已过期，请重新生成')
+          return
+        }
+
+        if (result.status === 'failed') {
+          toast.error(result.message || '扫码登录失败，请重新生成二维码')
+          return
+        }
+
+        schedule(intervalMs)
+      } catch {
+        if (!cancelled) schedule(intervalMs)
+      } finally {
+        if (!cancelled) setQrPolling(false)
+      }
+    }
+
+    schedule(600)
+
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [qrSession])
+
   const saveCookie = async () => {
     await updateDownloaderCookie({ platform: 'bilibili', cookie })
     toast.success('Bilibili Cookie 已保存')
+    await validateCookie()
+  }
+
+  const validateCookie = async () => {
+    setCookieValidating(true)
+    try {
+      const result = await validateDownloaderCookie(
+        { platform: 'bilibili', cookie },
+        { silent: true },
+      )
+      setCookieValidation(result)
+      if (result.valid) {
+        toast.success('Bilibili Cookie 验证通过')
+      } else {
+        toast.error(result.message || 'Bilibili Cookie 未登录或已过期')
+      }
+    } finally {
+      setCookieValidating(false)
+    }
+  }
+
+  const startQrLogin = async () => {
+    setQrStarting(true)
+    try {
+      const session = await startBilibiliQrCodeLogin('bilibili', { silent: true })
+      if (!session.qrcode_key || !session.url) {
+        toast.error(session.message || '生成 Bilibili 二维码失败')
+        return
+      }
+      setQrSession(session)
+      setQrStatus(null)
+      setCookieValidation(null)
+      toast.success('Bilibili 登录二维码已生成')
+    } finally {
+      setQrStarting(false)
+    }
+  }
+
+  const closeQrLogin = () => {
+    setQrSession(null)
+    setQrStatus(null)
   }
 
   const saveProxy = async () => {
@@ -1235,21 +1354,128 @@ function DownloaderSection() {
               加载中...
             </div>
           ) : (
-            <div className="flex gap-3">
-              <input
-                type="password"
-                value={cookie}
-                onChange={event => setCookie(event.target.value)}
-                placeholder="SESSDATA=..."
-                className="flex-1 rounded-lg border border-neutral-800 bg-[#1A1A1A] px-3 py-2 text-sm text-neutral-200 focus:border-neutral-600 focus:outline-none"
-              />
-              <button
-                type="button"
-                onClick={saveCookie}
-                className="rounded-lg bg-neutral-800 px-4 py-2 text-sm text-neutral-200 transition-colors hover:bg-neutral-700"
-              >
-                保存
-              </button>
+            <div className="space-y-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center">
+                <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row">
+                  <input
+                    type="password"
+                    value={cookie}
+                    onChange={event => {
+                      setCookie(event.target.value)
+                      setCookieValidation(null)
+                    }}
+                    placeholder="SESSDATA=..."
+                    className="min-w-0 flex-1 rounded-lg border border-neutral-800 bg-[#1A1A1A] px-3 py-2 text-sm text-neutral-200 focus:border-neutral-600 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={validateCookie}
+                    disabled={cookieValidating}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-neutral-800 px-4 py-2 text-sm text-neutral-200 transition-colors hover:border-neutral-600 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {cookieValidating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw size={15} />}
+                    验证
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveCookie}
+                    className="shrink-0 rounded-lg bg-neutral-800 px-4 py-2 text-sm text-neutral-200 transition-colors hover:bg-neutral-700"
+                  >
+                    保存
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={startQrLogin}
+                  disabled={qrStarting}
+                  className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-800 px-3 text-xs font-medium text-neutral-200 transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {qrStarting ? <Loader2 size={14} className="animate-spin" /> : <QrCode size={14} />}
+                  扫码填入
+                </button>
+              </div>
+
+              {qrSession && (
+                <div className="rounded-lg border border-neutral-800 bg-[#101010] p-4">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                    <div className="flex h-[148px] w-[148px] shrink-0 items-center justify-center rounded-lg bg-white p-2">
+                      <AntQRCode
+                        value={qrSession.url}
+                        size={132}
+                        bordered={false}
+                        color="#111111"
+                        bgColor="#ffffff"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-neutral-800 px-3 text-xs text-neutral-400">
+                          {qrPolling && <Loader2 size={13} className="animate-spin" />}
+                          {qrStatus?.message || '等待扫码'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={startQrLogin}
+                          disabled={qrStarting}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-neutral-800 px-3 text-xs text-neutral-300 transition-colors hover:bg-neutral-800 disabled:opacity-60"
+                        >
+                          {qrStarting ? <Loader2 size={13} className="animate-spin" /> : <RefreshCcw size={13} />}
+                          刷新
+                        </button>
+                        <button
+                          type="button"
+                          onClick={closeQrLogin}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-800 text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-neutral-200"
+                          aria-label="关闭扫码登录"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                      <div className="mt-3 text-xs leading-relaxed text-neutral-500">
+                        {qrStatus?.status === 'confirmed'
+                          ? '已自动填入并保存。'
+                          : qrStatus?.status === 'scanned'
+                            ? '已扫码，等待手机端确认。'
+                            : qrStatus?.status === 'expired'
+                              ? '二维码已过期，请刷新。'
+                              : '使用 Bilibili 手机端扫码确认。'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {cookieValidation && (
+                <div
+                  className={`flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
+                    cookieValidation.valid
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                      : 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+                  }`}
+                >
+                  {cookieValidation.valid ? (
+                    <CheckCircle2 size={14} className="shrink-0" />
+                  ) : (
+                    <X size={14} className="shrink-0" />
+                  )}
+                  <span>{cookieValidation.message || (cookieValidation.valid ? '已登录' : '未登录')}</span>
+                  {cookieValidation.username && (
+                    <span className="text-neutral-300">用户：{cookieValidation.username}</span>
+                  )}
+                  {cookieValidation.level != null && (
+                    <span className="text-neutral-300">等级：{cookieValidation.level}</span>
+                  )}
+                  {cookieValidation.vip_status != null && (
+                    <span className="text-neutral-300">
+                      会员：{String(cookieValidation.vip_status) === '1' ? '有效' : '无'}
+                    </span>
+                  )}
+                  {!cookieValidation.valid && cookieValidation.message?.toLowerCase().includes('dpapi') && (
+                    <span className="basis-full text-amber-100/90">
+                      可改用 Cookie 导出插件复制 Cookie 到输入框后保存。
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
