@@ -479,17 +479,27 @@ class PipelineOrchestrator:
 
             # 保存转写结果到 task.options，供 GENERATE 阶段使用
             full_text = transcribe_result.metadata.get("full_text", "")
-            task.options["transcript_text"] = full_text
 
-            # 读取 transcription.json 中的分段数据，供前端展示
+            # 读取 transcription.json，生成带时间戳的文本给 LLM + 分段数据给前端
             import json
             from pathlib import Path as _Path
+
+            def _fmt_ts(seconds: float) -> str:
+                m, s = divmod(int(seconds), 60)
+                h, m = divmod(m, 60)
+                return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+            timestamped_text = full_text  # 兜底
             trans_json_path = transcribe_result.artifacts.get("transcript_json", "")
             if trans_json_path:
                 try:
                     tj_data = json.loads(_Path(trans_json_path).read_text(encoding="utf-8"))
                     segments = tj_data.get("segments", [])
                     language = tj_data.get("language", "zh-CN")
+                    timestamped_text = "\n".join(
+                        f"[{_fmt_ts(s['start'])}-{_fmt_ts(s['end'])}] {s['text']}"
+                        for s in segments
+                    )
                     task.options["transcript_data"] = {
                         "full_text": full_text,
                         "language": language,
@@ -498,6 +508,8 @@ class PipelineOrchestrator:
                     }
                 except Exception:
                     pass
+
+            task.options["transcript_text"] = timestamped_text
 
             if task.video_id:
                 video = db.query(Video).filter(Video.video_id == task.video_id).first()

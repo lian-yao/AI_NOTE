@@ -649,6 +649,14 @@ async def delete_video(video_id: str, request: Request, db: Session = Depends(ge
     unlink_artifact(video.video_path)
     unlink_artifact(video.audio_path)
 
+    # 清理视频产物目录（meta.json / transcription.json / transcription.srt 等）
+    video_dir = (Path(video.video_path).parent if video.video_path
+                 else Path(video.audio_path).parent if video.audio_path
+                 else Path("data") / "videos" / video_id)
+    import shutil
+    if video_dir.exists():
+        shutil.rmtree(video_dir)
+
     note = db.query(Note).filter(Note.video_id == video.id).first()
     deleted_chunks = 0
     if note:
