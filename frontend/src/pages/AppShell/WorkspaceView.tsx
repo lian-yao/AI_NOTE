@@ -1329,7 +1329,6 @@ function TaskVideoPlayer({
 
     return segments
       .filter((_, index) => index % 8 === 0)
-      .slice(0, 28)
       .map((segment, index) => ({
         key: `segment-${index}`,
         title: segment.text,

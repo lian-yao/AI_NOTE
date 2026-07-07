@@ -189,18 +189,18 @@ class NoteGenerator:
                 # 章节标题，格式：### 章节名（MM:SS - MM:SS）
                 if current_section:
                     sections.append(current_section)
-                title_match = re.match(r"### (.+)（(\d+:\d+) - (\d+:\d+)）", line)
+                title_match = re.match(r"### (.+)（(\d{1,2}:\d{2}(?::\d{2})?) - (\d{1,2}:\d{2}(?::\d{2})?)）", line)
                 if title_match:
                     title = title_match.group(1).strip()
                     start_str = title_match.group(2)
                     end_str = title_match.group(3)
-                    # 将 MM:SS 转为秒数
                     def to_seconds(ts):
                         parts = ts.split(":")
-                        if len(parts) == 2:
+                        if len(parts) == 3:
+                            return int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                        elif len(parts) == 2:
                             return int(parts[0])*60 + int(parts[1])
-                        else:
-                            return 0
+                        return 0
                     start = to_seconds(start_str)
                     end = to_seconds(end_str)
                     current_section = {"title": title, "start_time": start, "end_time": end, "content": ""}
