@@ -176,7 +176,29 @@ class PipelineOrchestrator:
             else:
                 try:
                     from app.transcriber.auto import AutoTranscriber
-                    self.transcriber = AutoTranscriber()
+                    from app.transcriber.whisper import FasterWhisperTranscriber
+
+                    # 从 transcriber_config.json 读取用户选择的模型配置
+                    model_size = settings.whisper_model_size  # 默认值
+                    transcriber_type = "fast-whisper"
+                    try:
+                        import json
+                        tc_file = Path(settings.data_dir) / "transcriber_config.json"
+                        if tc_file.exists():
+                            tc = json.loads(tc_file.read_text(encoding="utf-8"))
+                            model_size = tc.get("whisper_model_size", model_size)
+                            transcriber_type = tc.get("transcriber_type", transcriber_type)
+                    except Exception:
+                        pass
+
+                    if transcriber_type == "fast-whisper":
+                        local = FasterWhisperTranscriber(
+                            model_size=model_size,
+                            device=settings.whisper_device,
+                        )
+                        self.transcriber = AutoTranscriber(local=local)
+                    else:
+                        self.transcriber = AutoTranscriber()
                 except Exception:
                     self.transcriber = MockTranscriber()
 

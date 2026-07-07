@@ -66,14 +66,28 @@ async def system_health(request: Request, db: Session = Depends(get_db)):
     }
 
 
+def _load_transcriber_config() -> dict:
+    """从 transcriber_config.json 加载转写器运行时配置。"""
+    from pathlib import Path
+    config_file = Path(settings.data_dir) / "transcriber_config.json"
+    if config_file.exists():
+        try:
+            import json
+            return json.loads(config_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
 @router.get("/config")
 def get_system_config():
     """获取系统配置（不包含敏感字段）。"""
+    tc = _load_transcriber_config()
     return {
         "llm_provider": settings.llm_provider,
         "llm_model": getattr(settings, 'llm_model', 'qwen-plus'),
-        "transcriber_mode": "local",
-        "whisper_model_size": settings.whisper_model_size,
+        "transcriber_mode": tc.get("transcriber_type", "local"),
+        "whisper_model_size": tc.get("whisper_model_size", settings.whisper_model_size),
         "whisper_device": settings.whisper_device,
         "embedding_model": "text-embedding-v3",
         "retrieval_top_k": settings.retrieval_top_k,
@@ -107,17 +121,37 @@ def update_system_config(body: ConfigUpdate):
 
 @router.post("/config/save")
 def save_system_config():
-    """将当前运行时配置持久化到 config.yaml。"""
+    """将当前运行时配置持久化到 config.yaml（含转写器配置）。"""
     import yaml
+    import json
+
     cfg_path = Path("config.yaml")
     if not cfg_path.exists():
         return {"message": "config.yaml 不存在，跳过保存"}
+
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
+
+    # 系统级配置
     cfg.update(_runtime_config)
+
+    # 转写器配置（从 transcriber_config.json 读取并写入 config.yaml）
+    tc = _load_transcriber_config()
+    if tc:
+        if "transcriber" not in cfg:
+            cfg["transcriber"] = {}
+        cfg["transcriber"]["mode"] = tc.get("transcriber_type", cfg["transcriber"].get("mode", "local"))
+        if "whisper" not in cfg["transcriber"]:
+            cfg["transcriber"]["whisper"] = {}
+        cfg["transcriber"]["whisper"]["model_size"] = tc.get(
+            "whisper_model_size",
+            cfg["transcriber"]["whisper"].get("model_size", "medium"),
+        )
+
     with open(cfg_path, "w", encoding="utf-8") as f:
-        yaml.dump(cfg, f, allow_unicode=True)
-    return {"message": "配置已保存到 config.yaml"}
+        yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
+
+    return {"message": "配置已保存到 config.yaml", "saved_fields": list(_runtime_config.keys())}
 
 
 @router.get("/stats")

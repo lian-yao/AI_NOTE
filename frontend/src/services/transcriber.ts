@@ -152,6 +152,54 @@ export const downloadModel = async (data: {
   }
 }
 
+export interface DownloadProgress {
+  model_size: string
+  downloading: boolean
+  progress: number
+  message: string
+  failed: boolean
+  error: string | null
+  elapsed_seconds: number
+}
+
+export const getDownloadProgress = async (
+  modelSize: string,
+  opts?: CallOpts,
+): Promise<DownloadProgress> => {
+  try {
+    return await request.get(
+      `/transcribers/models/download/${encodeURIComponent(modelSize)}/progress`,
+      cfg(opts),
+    )
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return {
+        model_size: modelSize,
+        downloading: false,
+        progress: 0,
+        message: '',
+        failed: false,
+        error: null,
+        elapsed_seconds: 0,
+      }
+    }
+    throw error
+  }
+}
+
+export const resetDownload = async (modelSize: string) => {
+  try {
+    return await request.post(
+      `/transcribers/models/download/${encodeURIComponent(modelSize)}/reset`,
+      undefined,
+      cfg(),
+    )
+  } catch (error) {
+    if (isNotFoundError(error)) return skippedApiResult()
+    throw error
+  }
+}
+
 export interface WhisperModelsResponse {
   builtin: Record<string, string>
   custom: Record<string, string>
