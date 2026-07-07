@@ -36,6 +36,7 @@ export interface TaskStatusResponse {
   status: TaskStatus
   task_id: string
   video_id?: string
+  stage?: string
   message?: string
   result?: {
     markdown: string
@@ -91,13 +92,20 @@ function normalizeFormat(data: GenerateNotePayload): string[] {
   return [...new Set(format)]
 }
 
-function normalizeTaskStatus(status?: string): TaskStatus {
+function normalizeTaskStatus(status?: string, stage?: string): TaskStatus {
   const value = (status || '').toLowerCase()
 
   if (value === 'completed' || value === 'success') return 'SUCCESS'
   if (value === 'failed') return 'FAILED'
   if (value === 'pending') return 'PENDING'
-  if (value === 'running' || value === 'retrying') return 'RUNNING'
+  if (value === 'running' || value === 'retrying') {
+    if (stage === 'parse') return 'PARSING'
+    if (stage === 'download') return 'DOWNLOADING'
+    if (stage === 'transcribe') return 'TRANSCRIBING'
+    if (stage === 'generate') return 'SUMMARIZING'
+    if (stage === 'store') return 'SAVING'
+    return 'RUNNING'
+  }
   if (value === 'downloading') return 'DOWNLOADING'
   if (value === 'transcribing') return 'TRANSCRIBING'
   if (value === 'generating') return 'SUMMARIZING'
@@ -223,7 +231,7 @@ export const get_task_status = async (task_id: string): Promise<TaskStatusRespon
     `/tasks/${encodeURIComponent(task_id)}`,
   )
 
-  const status = normalizeTaskStatus(response.status)
+  const status = normalizeTaskStatus(response.status, response.stage)
   const result =
     status === 'SUCCESS' && !response.result
       ? createCompletedResult({

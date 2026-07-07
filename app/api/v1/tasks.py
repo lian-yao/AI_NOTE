@@ -186,10 +186,12 @@ def get_task(task_id: str, request: Request, db: Session = Depends(get_db)):
                 nr = db.query(Note).filter(Note.id == pipe_task.note_id).first()
                 video = db.query(Video).filter(Video.id == nr.video_id).first() if nr else None
                 result = _task_result(db, video)
+            stage = pipe_task.current_stage.value if pipe_task.current_stage else None
             return {
                 "task_id": pipe_task.task_id,
                 "video_id": pipe_task.video_id,
                 "status": pipe_task.status.value,
+                "stage": stage,
                 "progress": pipe_task.progress,
                 "message": pipe_task.error or "",
                 "result": result,

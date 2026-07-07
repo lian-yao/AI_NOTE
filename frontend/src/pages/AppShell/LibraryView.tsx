@@ -36,6 +36,19 @@ function loadJson<T>(key: string, fallback: T): T {
   }
 }
 
+const statusLabel: Record<string, string> = {
+  PENDING: '排队中',
+  PARSING: '解析链接',
+  DOWNLOADING: '下载音频',
+  TRANSCRIBING: '转写文字',
+  SUMMARIZING: '总结内容',
+  FORMATTING: '整理格式',
+  SAVING: '保存结果',
+  SUCCESS: '已完成',
+  FAILED: '失败',
+  RUNNING: '处理中',
+}
+
 function normalizeVideoStatus(status: string): Task['status'] {
   const value = status.toLowerCase()
   if (value === 'completed' || value === 'success' || value === 'stored') return 'SUCCESS'
@@ -555,7 +568,7 @@ function TaskCard({
                   : 'bg-neutral-800 text-neutral-400'
             }`}
           >
-            {task.status === 'SUCCESS' ? '已完成' : task.status === 'FAILED' ? '失败' : '处理中'}
+            {statusLabel[task.status] || '处理中'}
           </span>
         </div>
 
