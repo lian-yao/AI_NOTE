@@ -529,14 +529,31 @@ class PipelineOrchestrator:
             if not transcript_text:
                 transcript_text = "这是模拟转录文本。"
 
+            # 从数据库获取视频元信息
+            video_meta = {
+                "title": task.video_id or "未命名视频",
+                "uploader": "",
+                "duration_seconds": 0,
+            }
+            if task.video_id:
+                v = db.query(Video).filter(Video.video_id == task.video_id).first()
+                if v:
+                    video_meta["title"] = v.title or video_meta["title"]
+                    video_meta["uploader"] = v.uploader or ""
+                    video_meta["duration_seconds"] = v.duration_seconds or 0
+
+            # 读取用户配置的笔记风格和自定义提示词
+            note_style = task.options.get("style", "minimal")
+            note_extras = task.options.get("extras")
+
             from app.note.generator import NoteGenerator
             task_llm = self._resolve_task_llm(task, db)
             note_gen = NoteGenerator(llm=task_llm)
             note_result = await note_gen.generate(
                 transcript_text,
-                {"title": task.options.get("video_dir", "").split("/")[-1] if not task.video_id else task.video_id,
-                 "uploader": "",
-                 "duration_seconds": 0},
+                video_meta,
+                style=note_style,
+                extras=note_extras,
             )
             note_content = note_result.get("markdown_content", transcript_text)
             note_file.write_text(note_content, encoding="utf-8")
@@ -559,7 +576,7 @@ class PipelineOrchestrator:
                         total_chunks=0,
                         section_count=len(note_result.get("sections", [])),
                         char_count=len(note_content),
-                        model_used="NoteGenerator",
+                        model_used=f"NoteGenerator({note_style})",
                     )
                     db.add(note)
                     db.flush()

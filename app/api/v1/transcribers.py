@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from app.core.config import settings
 from app.transcriber.model_manager import (
@@ -76,9 +76,10 @@ class TranscriberConfigUpdate(BaseModel):
 
 
 @router.put("/config")
-def update_transcriber_config(body: TranscriberConfigUpdate):
-    """更新转写器运行时配置（自动持久化）。"""
+def update_transcriber_config(body: TranscriberConfigUpdate, request: Request):
+    """更新转写器运行时配置（自动持久化 + 热更新运行中的编排器）。"""
     updated = []
+    old_size = _runtime_config.get("whisper_model_size")
     if body.transcriber_type:
         _runtime_config["transcriber_type"] = body.transcriber_type
         updated.append("transcriber_type")
@@ -87,6 +88,27 @@ def update_transcriber_config(body: TranscriberConfigUpdate):
         updated.append("whisper_model_size")
     if updated:
         _save_config()
+
+    # ── 热更新运行中的编排器转写器 ──
+    if body.whisper_model_size and body.whisper_model_size != old_size:
+        try:
+            orchestrator = request.app.state.orchestrator
+            if hasattr(orchestrator, "transcriber") and hasattr(
+                orchestrator.transcriber, "switch_local"
+            ):
+                # 清除旧模型的下载失败状态
+                if old_size:
+                    reset_download(old_size)
+                # 通知编排器切换模型
+                orchestrator.transcriber.switch_local(body.whisper_model_size)
+        except Exception:
+            import traceback
+            from loguru import logger
+
+            logger.warning(
+                f"热更新转写器失败（不影响配置保存）:\n{traceback.format_exc()}"
+            )
+
     return {"updated_fields": updated}
 
 
