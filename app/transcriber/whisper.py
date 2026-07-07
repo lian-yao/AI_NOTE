@@ -51,6 +51,28 @@ class FasterWhisperTranscriber:
         self.compute_type = compute_type
         self._model = None
 
+    def reload(self, model_size: str):
+        """热切换模型（不重启进程）。
+
+        更新模型大小并重置已加载的模型实例，
+        下次 transcribe 时自动下载/加载新模型。
+
+        Args:
+            model_size: 新的模型大小 (tiny/base/small/medium/large-v3/turbo)
+
+        Raises:
+            ValueError: 无效的模型大小
+        """
+        valid_sizes = {"tiny", "base", "small", "medium", "large-v3", "turbo"}
+        if model_size not in valid_sizes:
+            raise ValueError(
+                f"无效的模型大小: {model_size}，可选: {', '.join(sorted(valid_sizes))}"
+            )
+        logger = __import__("loguru").logger
+        logger.info(f"转写器模型热切换: {self.model_size} → {model_size}")
+        self.model_size = model_size
+        self._model = None  # 下次 _ensure_model() 重新加载
+
     def _resolve_compute_type(self, device: str, compute_type: str) -> str:
         """根据设备自动选择合适的计算精度。"""
         if compute_type != "auto":

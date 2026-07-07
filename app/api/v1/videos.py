@@ -70,11 +70,12 @@ class VideoProcessRequest(BaseModel):
     quality: str = "1080p"
     transcriber: str = "auto"
     keep_video: bool = False
-    provider_id: str | None = None
-    model_name: str | None = None
-    format: list[str] | None = None
-    style: str | None = None
-    extras: str | None = None
+    # ── 笔记生成选项 ──
+    provider_id: str | None = None     # LLM 提供商 ID
+    model_name: str | None = None      # LLM 模型名称
+    format: list[str] | None = None    # 输出格式: summary/toc/link/screenshot
+    style: str | None = None           # 笔记风格: minimal/detailed/tutorial/academic/...
+    extras: str | None = None          # 自定义提示词内容
     video_understanding: bool = False
     video_interval: int = 6
     grid_size: list[int] | None = None
@@ -440,6 +441,7 @@ async def parse_video(body: VideoParseRequest):
 @router.post("/process")
 async def process_video(body: VideoProcessRequest, orchestrator=Depends(get_orchestrator)):
     """提交视频处理，返回 task_id，前端轮询进度。"""
+    # 构建笔记生成选项，透传给编排器
     options = {
         "quality": body.quality,
         "transcriber": body.transcriber,
@@ -447,7 +449,7 @@ async def process_video(body: VideoProcessRequest, orchestrator=Depends(get_orch
         "provider_id": body.provider_id,
         "model_name": body.model_name,
         "format": body.format or [],
-        "style": body.style,
+        "style": body.style or "minimal",
         "extras": body.extras,
         "video_understanding": body.video_understanding,
         "video_interval": body.video_interval,

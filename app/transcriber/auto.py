@@ -94,6 +94,19 @@ class AutoTranscriber:
 
         return result
 
+    def switch_local(self, model_size: str):
+        """热切换本地 Whisper 模型大小。
+
+        重置失败计数并通知底层转写器切换模型，
+        下次 transcribe 时自动加载新模型。
+
+        Args:
+            model_size: 新的模型大小 (tiny/base/small/medium/large-v3/turbo)
+        """
+        self._local_failures = 0
+        if self.local:
+            self.local.reload(model_size)
+
     def reset(self):
         """重置失败计数（例如用户手动切换了转写方式后调用）。"""
         self._local_failures = 0
