@@ -69,21 +69,26 @@ function normalizeProvider(provider: ProviderApiItem) {
     ...provider,
     logo: provider.logo || 'custom',
     type: provider.type || 'openai-compatible',
-    api_key: provider.api_key || (hasApiKey ? '******' : ''),
+    api_key: provider.api_key || '',
+    has_api_key: hasApiKey,
     base_url: provider.base_url || '',
     enabled: provider.enabled === false ? 0 : Number(provider.enabled ?? 1),
   }
 }
 
 function providerBody(data: ProviderPayload) {
-  return {
+  const apiKey = data.api_key ?? data.apiKey
+  const body: Record<string, unknown> = {
     name: data.name,
     logo: data.logo,
     type: data.type === 'custom' ? 'openai-compatible' : data.type,
     base_url: data.base_url ?? data.baseUrl,
-    api_key: data.api_key ?? data.apiKey,
     enabled: data.enabled == null ? undefined : Boolean(data.enabled),
   }
+  if (apiKey !== undefined) {
+    body.api_key = apiKey
+  }
+  return body
 }
 
 function getItems<T>(res: ModelListResponse<T> | ModelDataListResponse<T> | T[]): T[] {

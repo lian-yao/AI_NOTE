@@ -56,6 +56,7 @@ import {
   getModelsStatus,
   getTranscriberConfig,
   updateTranscriberConfig,
+  getDownloadProgress,
   type ModelStatus,
   type TranscriberConfig,
 } from '@/services/transcriber'
@@ -185,10 +186,6 @@ function providerDraftFromPreset(
     baseUrl: preset.baseUrl,
     enabled: 1,
   }
-}
-
-function isConfiguredProvider(provider: IProvider) {
-  return provider.type === 'custom' || Boolean(provider.apiKey?.trim())
 }
 
 const CACHE_DIRECTORY_META: {
@@ -397,11 +394,6 @@ function ProviderSection() {
   const [creating, setCreating] = useState(false)
   const [providersLoadFailed, setProvidersLoadFailed] = useState(false)
 
-  const configuredProviders = useMemo(
-    () => providers.filter(isConfiguredProvider),
-    [providers],
-  )
-
   useEffect(() => {
     let mounted = true
 
@@ -421,7 +413,7 @@ function ProviderSection() {
   useEffect(() => {
     setDrafts(current => {
       const next: Record<string, ProviderDraft> = {}
-      configuredProviders.forEach(provider => {
+      providers.forEach(provider => {
         next[provider.id] = current[provider.id] || provider
       })
       return next
@@ -429,18 +421,18 @@ function ProviderSection() {
 
     setExpanded(current => {
       const next: Record<string, boolean> = {}
-      configuredProviders.forEach(provider => {
+      providers.forEach(provider => {
         next[provider.id] = current[provider.id] ?? false
       })
       return next
     })
-  }, [configuredProviders])
+  }, [providers])
 
   useEffect(() => {
-    configuredProviders.forEach(provider => {
+    providers.forEach(provider => {
       refreshEnabledModels(provider.id)
     })
-  }, [configuredProviders])
+  }, [providers])
 
   const updateProviderDraft = (providerId: string, field: keyof ProviderDraft, value: string | number) => {
     setDrafts(prev => ({
@@ -506,17 +498,20 @@ function ProviderSection() {
       return
     }
 
+    const apiKey = draft.apiKey.trim()
+    const updatePayload = {
+      id: providerId,
+      name: draft.name.trim(),
+      base_url: draft.baseUrl.trim(),
+      logo: draft.logo,
+      type: draft.type || 'custom',
+      enabled: draft.enabled,
+      ...(apiKey || !draft.has_api_key ? { api_key: apiKey } : {}),
+    }
+
     setSavingProviderId(providerId)
     try {
-      await updateProviderById({
-        id: providerId,
-        name: draft.name.trim(),
-        api_key: draft.apiKey.trim(),
-        base_url: draft.baseUrl.trim(),
-        logo: draft.logo,
-        type: draft.type || 'custom',
-        enabled: draft.enabled,
-      })
+      await updateProviderById(updatePayload)
       await fetchProviderList()
       toast.success('Provider 配置已保存')
     } catch {
@@ -664,7 +659,7 @@ function ProviderSection() {
     ? '正在加载提供商'
     : providersLoadFailed
       ? 'Provider 配置暂未加载'
-      : `已添加 ${configuredProviders.length} 个提供商`
+      : `已添加 ${providers.length} 个提供商`
 
   return (
     <section className="space-y-4">
@@ -714,13 +709,13 @@ function ProviderSection() {
       )}
 
       <div className="space-y-3">
-        {providersLoaded && configuredProviders.length === 0 && !showAddForm && (
+        {providersLoaded && providers.length === 0 && !showAddForm && (
           <div className="rounded-xl border border-dashed border-neutral-800 bg-[#141414] px-6 py-10 text-center text-sm text-neutral-500">
             暂无 Provider 配置，添加一个 OpenAI 兼容端点后即可获取模型列表。
           </div>
         )}
 
-        {configuredProviders.map(provider => {
+        {providers.map(provider => {
           const draft = drafts[provider.id] || provider
           const isExpanded = expanded[provider.id] ?? false
           const enabledModels = enabledModelsByProvider[provider.id] || []
@@ -977,7 +972,7 @@ function ProviderInlineFields({
             type={showApiKey ? 'text' : 'password'}
             value={draft.apiKey}
             onChange={event => onChange('apiKey', event.target.value)}
-            placeholder="sk-..."
+            placeholder={draft.has_api_key ? '已配置，留空则不修改' : 'sk-...'}
             className="w-full rounded-lg border border-neutral-800 bg-[#1A1A1A] py-2 pl-3 pr-10 text-sm text-neutral-200 outline-none focus:border-neutral-600"
           />
           <button
@@ -1844,6 +1839,7 @@ function TranscriberSection() {
   const [selectedModel, setSelectedModel] = useState('')
   const [saving, setSaving] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
 
   const load = async (silent = false) => {
     try {
@@ -1865,14 +1861,59 @@ function TranscriberSection() {
     }
   }
 
+  // 只刷新模型状态，不重置用户选择
+  const refreshStatus = async () => {
+    try {
+      const statuses = await getModelsStatus({ silent: true })
+      setModelStatuses(statuses.whisper)
+    } catch {
+      // 静默失败
+    }
+  }
+
   useEffect(() => {
     load(true)
   }, [])
+
+  // 下载进度轮询：当有模型正在下载时，每 1.5 秒查询进度
+  useEffect(() => {
+    const downloadingModels = modelStatuses.filter(s => s.downloading)
+    if (downloadingModels.length === 0) return
+
+    const interval = setInterval(async () => {
+      for (const model of downloadingModels) {
+        try {
+          const progress = await getDownloadProgress(model.model_size, { silent: true })
+          if (progress) {
+            setDownloadProgress(prev => ({
+              ...prev,
+              [model.model_size]: progress.progress,
+            }))
+            // 下载完成或失败时刷新状态（不重置选择）
+            if (!progress.downloading) {
+              refreshStatus()
+              setDownloadProgress(prev => {
+                const next = { ...prev }
+                delete next[model.model_size]
+                return next
+              })
+            }
+          }
+        } catch {
+          // 静默失败
+        }
+      }
+    }, 1500)
+
+    return () => clearInterval(interval)
+  }, [modelStatuses])
 
   const currentStatus = useMemo(
     () => modelStatuses.find(status => status.model_size === selectedModel),
     [modelStatuses, selectedModel],
   )
+
+  const currentProgress = downloadProgress[selectedModel] ?? 0
 
   const save = async () => {
     setSaving(true)
@@ -1939,32 +1980,49 @@ function TranscriberSection() {
             </div>
 
             {isWhisperType(selectedType) && currentStatus && (
-              <div className="flex items-center justify-between rounded-lg border border-neutral-800 bg-[#1A1A1A] p-4">
-                <div>
-                  <div className="text-sm font-medium text-neutral-200">{selectedModel}</div>
-                  <div className="mt-1 text-xs text-neutral-500">
-                    {currentStatus.downloaded
-                      ? '模型已就绪'
-                      : currentStatus.downloading
-                        ? '模型下载中'
-                        : currentStatus.failed
-                          ? currentStatus.error || '模型下载失败'
-                          : '模型尚未下载'}
+              <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-[#1A1A1A] p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-neutral-200">{selectedModel}</div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      {currentStatus.downloaded
+                        ? '模型已就绪'
+                        : currentStatus.downloading
+                          ? `模型下载中 ${currentProgress > 0 ? `${currentProgress.toFixed(1)}%` : ''}`
+                          : currentStatus.failed
+                            ? currentStatus.error || '模型下载失败'
+                            : '模型尚未下载'}
+                    </div>
                   </div>
+                  {!currentStatus.downloaded && !currentStatus.downloading && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const result = await downloadModel({ model_size: selectedModel, transcriber_type: selectedType })
+                        if (isSkippedApiResult(result)) {
+                          toast.success('后端模型下载接口暂未实现，已跳过')
+                        } else {
+                          toast.success('模型下载已开始')
+                        }
+                        setTimeout(() => refreshStatus(), 800)
+                      }}
+                      className="flex items-center gap-1.5 rounded-lg bg-neutral-800 px-3 py-2 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
+                    >
+                      <Download size={14} />
+                      {currentStatus.failed ? '重试' : '下载'}
+                    </button>
+                  )}
+                  {currentStatus.downloading && (
+                    <Loader2 size={16} className="animate-spin text-neutral-400" />
+                  )}
                 </div>
-                {!currentStatus.downloaded && !currentStatus.downloading && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const result = await downloadModel({ model_size: selectedModel, transcriber_type: selectedType })
-                      toast.success(isSkippedApiResult(result) ? '后端模型下载接口暂未实现，已跳过' : '模型下载已开始')
-                      setTimeout(() => load(true), 1000)
-                    }}
-                    className="flex items-center gap-1.5 rounded-lg bg-neutral-800 px-3 py-2 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
-                  >
-                    <Download size={14} />
-                    {currentStatus.failed ? '重试' : '下载'}
-                  </button>
+                {currentStatus.downloading && currentProgress > 0 && (
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all duration-500"
+                      style={{ width: `${Math.min(currentProgress, 100)}%` }}
+                    />
+                  </div>
                 )}
               </div>
             )}

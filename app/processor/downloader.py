@@ -86,18 +86,26 @@ async def download_video(
             "retries": 3,
         }
 
-        # Cookie：用全局配置（浏览器提取 or 文件 or 字符串）
-        from app.processor import build_cookie_opts, save_browser_cookies_to_cache, cleanup_temp_cookie
+        # Cookie：用全局配置（设置页字符串 / 文件 / 显式浏览器读取）
+        from app.processor import (
+            build_cookie_opts,
+            cleanup_temp_cookie,
+            format_ytdlp_error,
+            is_browser_cookie_error,
+            save_browser_cookies_to_cache,
+            without_browser_cookie_opts,
+        )
         opts.update(build_cookie_opts())
 
         # 提取内部标记（yt-dlp 不认识这些 key）
         browser_cache_path = opts.pop("_browser_cache", None)
         _temp_cookie = opts.pop("_temp_cookie", False)
+        uses_browser_cookie = "cookiesfrombrowser" in opts
 
         loop = __import__("asyncio").get_running_loop()
         # yt-dlp 是同步库，在线程池中运行
-        def _sync_download():
-            with yt_dlp.YoutubeDL(opts) as ydl:
+        def _sync_download_with(download_opts: dict):
+            with yt_dlp.YoutubeDL(download_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 # 首次从浏览器提取成功 → 自动缓存
                 if browser_cache_path and ydl.cookiejar:
@@ -116,6 +124,20 @@ async def download_video(
                 if candidates:
                     return str(max(candidates, key=lambda path: path.stat().st_mtime))
                 return str(prepared)
+
+        def _sync_download():
+            try:
+                return _sync_download_with(opts)
+            except Exception as exc:
+                if uses_browser_cookie and is_browser_cookie_error(exc):
+                    try:
+                        return _sync_download_with(without_browser_cookie_opts(opts))
+                    except Exception as retry_exc:
+                        raise RuntimeError(
+                            "读取浏览器 Cookie 失败，已自动改为无 Cookie 下载但仍失败："
+                            f"{format_ytdlp_error(retry_exc)}"
+                        ) from retry_exc
+                raise
 
         try:
             return await loop.run_in_executor(None, _sync_download)
@@ -136,12 +158,16 @@ async def download_video(
     #     return StageResult(success=False, error=f"视频下载失败: {exc}")
     # =========================================================================
 
-    video_path = await retry_with_backoff(
-        _do_download,
-        max_retries=3,
-        base_delay=5.0,
-        backoff=5.0,
-    )
+    try:
+        video_path = await retry_with_backoff(
+            _do_download,
+            max_retries=3,
+            base_delay=5.0,
+            backoff=5.0,
+        )
+    except Exception as exc:
+        from app.processor import format_ytdlp_error
+        return StageResult(success=False, error=f"视频下载失败: {format_ytdlp_error(exc)}")
 
     if not os.path.isfile(video_path):
         return StageResult(success=False, error=f"下载后文件不存在: {video_path}")

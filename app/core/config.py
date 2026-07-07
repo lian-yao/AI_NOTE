@@ -45,9 +45,10 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
 
     # Platform cookies
-    # 来源: "browser"（推荐，从浏览器加密存储直接读取）/ "file"（明文 cookies.txt）/ "none"
-    bilibili_cookie_source: str = "browser"
-    # 当 source="browser" 时指定浏览器: chrome / firefox / edge / brave / opera / chromium
+    # 来源: "string"（设置页粘贴）/ "browser"（从浏览器读取）/ "file"（cookies.txt）/ "none"
+    # 默认不读浏览器 Cookie，避免 Windows DPAPI/浏览器锁库导致解析流程 500。
+    bilibili_cookie_source: str = "string"
+    # 仅当 source="browser" 时指定浏览器: chrome / firefox / edge / brave / opera / chromium
     bilibili_cookie_browser: str = "chrome"
     # 当 source="file" 时指定 cookies.txt 路径（相对路径相对于项目根目录）
     bilibili_cookie_file: str = "data/cookies.txt"

@@ -7,6 +7,6 @@ import 'react';
 declare global {
   namespace JSX {
     type Element = React.ReactElement;
-    interface IntrinsicElements extends React.JSX.IntrinsicElements {}
+    type IntrinsicElements = React.JSX.IntrinsicElements;
   }
 }
