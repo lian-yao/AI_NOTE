@@ -1,4 +1,4 @@
-"""
+﻿"""
 Provider persistence helpers shared by provider and model APIs.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ def default_provider_rows() -> list[dict[str, Any]]:
     return [
         {
             "id": "tongyi",
-            "name": "通义千问",
+            "name": "qwen",
             "logo": "tongyi",
             "type": "tongyi",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -95,6 +95,7 @@ def provider_to_dict(provider: LLMProvider) -> dict[str, Any]:
         "base_url": provider.base_url,
         "enabled": provider.enabled,
         "has_api_key": bool(provider.api_key),
+        "api_key": provider.api_key if provider.api_key else "",
         "created_at": provider.created_at,
         "updated_at": provider.updated_at,
     }
