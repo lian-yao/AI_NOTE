@@ -593,6 +593,13 @@ export default function GenerateView({
   }
 
   const handleSubmit = async () => {
+    const hasRunningTask = tasks.some(
+      task => task.status !== 'SUCCESS' && task.status !== 'FAILED' && task.status !== 'CANCELLED'
+    )
+    if (hasRunningTask) {
+      toast.error('任务执行中，请完成任务后再试')
+      return
+    }
     if (activeTab === 'batch') {
       const urls = extractVideoUrls(batchUrls)
 
