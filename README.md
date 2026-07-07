@@ -27,7 +27,26 @@ VN_DEEPSEEK_API_KEY=sk-你的DeepSeek api-key
 登录B站，按下Ctrl+shift+i,点击“+”里的应用程序，左侧列表的cookie,点击cookie前面的倒三角符号，会有链接，点击https://bilibili.com,就会有各类信息，复制给ai，让其整理成cookie链接，复制该链接保存到到设置里的平台数据里
 
 
-## 快速,开始
+## 一键启动前后端
+
+```powershell
+.\start-dev.ps1 -Backend real
+```
+
+脚本会自动启动后端（uvicorn）和前端（Vite），并打开两个 PowerShell 窗口。
+后端默认运行在 http://127.0.0.1:8000，前端默认运行在 http://localhost:5173。
+
+如果只想分别手动启动：
+
+```bash
+# 后端
+uv run uvicorn app.main:app --reload
+
+# 前端（新终端）
+cd frontend && npm run dev
+```
+
+## 快速开始
 
 本项目使用 **uv** 管理依赖，Python 版本锁定在 **3.13.3**（见 `.python-version`）。
 
@@ -37,9 +56,6 @@ pip install uv
 
 # 创建虚拟环境并安装依赖
 uv sync
-
-# 启动开发服务器
-uv run uvicorn app.main:app --reload
 ```
 
 ## 环境准备
@@ -98,43 +114,23 @@ npm install --legacy-peer-deps
 
 ## 开发启动脚本
 
-项目根目录提供了 PowerShell 启动脚本，可以根据参数选择真实后端或 mock 后端，并自动同时启动后端与前端。脚本会优先使用 `uv run uvicorn`；如果当前环境没有 `uv`，会自动回退到 `python -m uvicorn` 或 `py -m uvicorn`。
-
-脚本会在启动前检查端口：
-
-- 如果后端端口已经有服务并且 `/health` 可访问，会复用这个后端，不再重复启动。
-- 如果后端端口被其它程序占用，默认自动寻找下一个可用端口，并同步修改前端 `VITE_API_BASE_URL`。
-- 如果前端端口被占用，默认自动寻找下一个可用端口。
-- 如果希望端口被占用时直接报错，可加 `-StrictPorts`。
-
-使用 mock 后端：
+项目根目录提供了 `start-dev.ps1`，可一次性启动前后端。脚本会打开两个 PowerShell 窗口，分别运行后端和前端。
 
 ```powershell
-cd D:\code\github-pgm\AI_NOTE
-.\start-dev.ps1 -Backend mock
-```
-
-mock 后端默认会预置固定样例 `https://www.bilibili.com/video/BV1aeLqzUE6L`，用于稳定验证笔记、字幕脚本和原文细读。除此之外，mock 生成的任务只保存在内存里，不会作为真实知识库数据长期保留。如需启动完全空的 mock 后端，可显式加 `-NoSeedMockFixture`：
-
-```powershell
-.\start-dev.ps1 -Backend mock -NoSeedMockFixture
-```
-
-使用真实后端：
-
-```powershell
-cd D:\code\github-pgm\AI_NOTE
 .\start-dev.ps1 -Backend real
 ```
 
-常用可选参数：
+脚本功能：
+- 优先使用 `uv run uvicorn`，回退到 `python -m uvicorn`
+- 端口被占用时自动寻找下一个可用端口
+- 自动设置前端环境变量 `VITE_API_BASE_URL` 指向后端地址
+- 后端已启动时自动复用（检查 `/health`）
+
+常用参数：
 
 ```powershell
-.\start-dev.ps1 -Backend mock -MockBackendPort 8010 -FrontendPort 5173
 .\start-dev.ps1 -Backend real -RealBackendPort 8000 -FrontendPort 5173
 .\start-dev.ps1 -Backend real -RealBackendPort 8001 -FrontendPort 5174
 .\start-dev.ps1 -Backend real -StrictPorts
+.\start-dev.ps1 -Backend real -NoReload
 ```
-
-脚本会打开两个 PowerShell 窗口：一个运行后端，一个运行前端。mock 模式会启动 `mock_backend.app:app`，真实模式会启动 `app.main:app`；前端会自动设置 `VITE_API_BASE_URL` 指向所选后端。
-

@@ -1,6 +1,6 @@
 param(
   [ValidateSet("mock", "real")]
-  [string]$Backend = "mock",
+  [string]$Backend = "real",
 
   [string]$HostAddress = "127.0.0.1",
 
@@ -42,6 +42,9 @@ function Resolve-BindAddress([string]$Address) {
   }
   return $resolved
 }
+
+$VenvRoot = Join-Path $RepoRoot ".venv"
+$VenvPython = Join-Path $VenvRoot "Scripts\python.exe"
 
 function Test-PortAvailable([string]$Address, [int]$Port) {
   $listener = $null
@@ -96,7 +99,10 @@ $Uv = Get-Command uv -ErrorAction SilentlyContinue
 $Python = Get-Command python -ErrorAction SilentlyContinue
 $Py = Get-Command py -ErrorAction SilentlyContinue
 
-if ($Uv) {
+if (Test-Path $VenvPython) {
+  $BackendRunner = "& `"$VenvPython`" -m uvicorn"
+}
+elseif ($Uv) {
   $BackendRunner = "uv run uvicorn"
 }
 elseif ($Python) {

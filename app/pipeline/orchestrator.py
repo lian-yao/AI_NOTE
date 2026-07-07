@@ -651,6 +651,10 @@ class PipelineOrchestrator:
                     error_message=error_message,
                 )
                 db.add(t)
+                if status == "running":
+                    t.started_at = datetime.utcnow()
+                elif status == "completed":
+                    t.completed_at = datetime.utcnow()
             else:
                 t.status = status
                 t.progress = progress
