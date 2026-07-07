@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { getApiBaseURL } from '@/utils/api'
 
 interface CallOpts {
   silent?: boolean
@@ -80,6 +81,34 @@ export interface ParseVideoResponse {
   }>
 }
 
+export interface VideoPlayerSource {
+  title: string
+  source_url: string
+  webpage_url?: string | null
+  stream_url?: string | null
+  local_stream_url?: string | null
+  embed_url?: string | null
+  cover_url?: string | null
+  duration_seconds?: number | null
+  format_id?: string | null
+  ext?: string | null
+  height?: number | null
+  is_proxy_stream?: boolean
+  player_type?: 'local' | 'native' | 'embed' | string
+}
+
+export function resolveApiMediaUrl(value: string | null | undefined): string {
+  if (!value) return ''
+  if (/^https?:\/\//i.test(value)) return value
+
+  const path = value.startsWith('/') ? value : `/${value}`
+  const apiBase = getApiBaseURL().replace(/\/+$/, '')
+  if (!/^https?:\/\//i.test(apiBase)) return path
+
+  const originBase = apiBase.replace(/\/api\/v1$/i, '').replace(/\/api$/i, '')
+  return `${originBase}${path}`
+}
+
 export const listVideos = async (
   params: { page?: number; page_size?: number; status?: string; search?: string } = {},
   opts?: CallOpts,
@@ -96,6 +125,25 @@ export const getVideo = async (videoId: string, opts?: CallOpts): Promise<VideoI
 
 export const parseVideo = async (url: string, opts?: CallOpts): Promise<ParseVideoResponse> => {
   return await request.post('/videos/parse', { url }, cfg(opts))
+}
+
+export const resolveVideoPlayer = async (
+  url: string,
+  quality = '1080p',
+  videoId?: string,
+  opts?: CallOpts,
+): Promise<VideoPlayerSource> => {
+  const data = await request.post<unknown, VideoPlayerSource>(
+    '/videos/player/resolve',
+    { url, quality, video_id: videoId },
+    cfg(opts),
+  )
+
+  return {
+    ...data,
+    stream_url: resolveApiMediaUrl(data.stream_url),
+    local_stream_url: resolveApiMediaUrl(data.local_stream_url),
+  }
 }
 
 export const getNoteRaw = async (videoId: string, opts?: CallOpts): Promise<string> => {

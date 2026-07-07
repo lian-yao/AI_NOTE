@@ -20,6 +20,7 @@ venv/
 # Data
 data/
 logs/
+mock_backend/.data/
 
 # Frontend
 frontend/node_modules/

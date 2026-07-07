@@ -71,11 +71,3 @@ async def task_websocket(websocket: WebSocket, task_id: str):
         pass
     finally:
         await manager.disconnect(task_id, websocket)
-    await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_text()
-            if data == "ping":
-                await websocket.send_json({"event": "pong"})
-    except WebSocketDisconnect:
-        pass

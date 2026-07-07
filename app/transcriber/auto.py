@@ -7,11 +7,26 @@
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from pathlib import Path
 
+from app.core.config import settings
 from app.schemas.stage import StageResult
 from app.transcriber.whisper import FasterWhisperTranscriber
 from app.transcriber.bjian import BjianTranscriber
+
+
+def _configured_model_size() -> str:
+    configured = "tiny"
+    config_file = Path(settings.data_dir) / "transcriber_config.json"
+    if config_file.exists():
+        try:
+            data = json.loads(config_file.read_text(encoding="utf-8"))
+            configured = str(data.get("whisper_model_size") or configured)
+        except Exception:
+            pass
+    return configured if configured in {"tiny", "base", "small", "medium", "large-v3"} else "tiny"
 
 
 class AutoTranscriber:
@@ -35,7 +50,10 @@ class AutoTranscriber:
             api: 必剪 API 转写器实例
             local_max_failures: 本地连续失败多少次后切换
         """
-        self.local = local or FasterWhisperTranscriber()
+        self.local = local or FasterWhisperTranscriber(
+            model_size=_configured_model_size(),
+            device=settings.whisper_device or "cpu",
+        )
         self.api = api or BjianTranscriber()
         self.local_max_failures = local_max_failures
         self._local_failures = 0

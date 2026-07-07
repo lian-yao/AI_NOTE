@@ -10,7 +10,7 @@ export function getLatestMarkdown(markdown: Task['markdown'] | undefined): {
   if (typeof markdown === 'string') return { content: markdown }
 
   const latest = [...markdown].sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    (a, b) => (parseBackendDate(b.created_at)?.getTime() || 0) - (parseBackendDate(a.created_at)?.getTime() || 0),
   )[0]
 
   return {
@@ -68,10 +68,25 @@ export function formatTime(seconds: number | undefined): string {
   return `${minutes}:${secs.toString().padStart(2, '0')}`
 }
 
+export function parseBackendDate(value: string | undefined): Date | null {
+  if (!value) return null
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === 'builtin') return null
+
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(trimmed)
+  let normalized = trimmed.replace(' ', 'T')
+  if (!hasTimezone && /^\d{4}-\d{2}-\d{2}T/.test(normalized)) {
+    normalized += 'Z'
+  }
+  normalized = normalized.replace(/(\.\d{3})\d+(Z|[+-]\d{2}:?\d{2})$/i, '$1$2')
+
+  const date = new Date(normalized)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
 export function formatDate(value: string | undefined): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
+  const date = parseBackendDate(value)
+  if (!date) return ''
 
   return date.toLocaleString('zh-CN', {
     year: 'numeric',

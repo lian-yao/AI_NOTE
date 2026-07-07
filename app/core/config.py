@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     bjian_app_id: str = ""
     bjian_access_token: str = ""
     whisper_model_size: str = "medium"
-    whisper_device: str = "auto"
+    whisper_device: str = "cpu"
 
     # Platform cookies
     # 来源: "string"（设置页粘贴）/ "browser"（从浏览器读取）/ "file"（cookies.txt）/ "none"

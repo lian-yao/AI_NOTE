@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { delete_task, generateNote } from '@/services/note.ts'
-import { retryBackendTask } from '@/services/task'
 import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 import { get, set, del } from 'idb-keyval'
@@ -19,6 +18,7 @@ export type TaskStatus =
   | 'SAVING'
   | 'SUCCESS'
   | 'FAILED'
+  | 'CANCELLED'
 
 export interface AudioMeta {
   cover_url: string
@@ -63,6 +63,7 @@ export interface Task {
   markdown: string | Markdown[] // 为了兼容之前的笔记
   transcript: Transcript
   status: TaskStatus
+  message?: string
   audioMeta: AudioMeta
   createdAt: string
   formData: {
@@ -323,7 +324,6 @@ export const useTaskStore = create<TaskStore>()(
           return
         }
         const task = get().tasks.find(task => task.id === id)
-        console.log('retry',task)
         if (!task) return
 
         const newFormData = {
@@ -331,29 +331,24 @@ export const useTaskStore = create<TaskStore>()(
           ...payload,
         }
         try {
-          if (task.status === 'FAILED') {
-            try {
-              await retryBackendTask(id, { silent: true })
-              set(state => ({
-                tasks: state.tasks.map(t =>
-                  t.id === id
-                    ? {
-                      ...t,
-                      status: 'PENDING',
-                    }
-                    : t,
-                ),
-              }))
-              return
-            } catch {
-              // 本地合成任务或后端没有该任务时，继续走重新提交兜底。
-            }
-          }
-
-          await generateNote({
+          const data = await generateNote({
             ...newFormData,
             task_id: id,
           })
+          set(state => ({
+            tasks: state.tasks.map(t =>
+              t.id === id
+                ? {
+                  ...t,
+                  id: data.task_id || id,
+                  formData: newFormData,
+                  status: 'PENDING',
+                  message: undefined,
+                }
+                : t,
+            ),
+            currentTaskId: state.currentTaskId === id ? (data.task_id || id) : state.currentTaskId,
+          }))
         } catch (e: unknown) {
           // 就绪门禁：转写模型未下载好。不要把任务标成 PENDING（会一直转），
           // 给提示让用户先去下载。
@@ -377,18 +372,6 @@ export const useTaskStore = create<TaskStore>()(
           console.error('重试任务失败：', e)
           return
         }
-
-        set(state => ({
-          tasks: state.tasks.map(t =>
-              t.id === id
-                  ? {
-                    ...t,
-                    formData: newFormData, // ✅ 显式更新 formData
-                    status: 'PENDING',
-                  }
-                  : t
-          ),
-        }))
       },
 
 

@@ -78,8 +78,9 @@ def build_cookie_opts() -> dict:
     if source not in {"string", "browser", "file", "none"}:
         source = "string"
 
-    # ── source: string ──────────────────────────────────────────────
-    if source == "string":
+    # 前端「设置 → 平台数据」保存的 Cookie 应优先生效。
+    # 这样用户不需要额外改 VN_BILIBILI_COOKIE_SOURCE，也能让解析、下载和播放器共用登录态。
+    if source != "none":
         from app.core.cookie_store import get_cookie as _get_stored_cookie
         cookie_str = _get_stored_cookie("bilibili")
         if cookie_str:
@@ -91,6 +92,10 @@ def build_cookie_opts() -> dict:
             tmp.write(netscape)
             tmp.close()
             return {"cookiefile": tmp.name, "_temp_cookie": True}
+
+    # ── source: string ──────────────────────────────────────────────
+    if source == "string":
+        return {}
 
     # ── source: browser ─────────────────────────────────────────────
     elif source == "browser":

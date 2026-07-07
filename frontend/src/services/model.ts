@@ -156,6 +156,14 @@ export const fetchEnableModelById = async (id: string, opts?: CallOpts) => {
   return getItems(res)
 }
 
+export const fetchProviderModelRowsById = async (id: string, opts?: CallOpts) => {
+  const res = await request.get<
+    unknown,
+    ModelListResponse<EnabledModelItem> | ModelDataListResponse<EnabledModelItem>
+  >('/models', withParams(opts, { provider_id: id, include_disabled: true }))
+  return getItems(res)
+}
+
 export async function addModel(
   data: { provider_id: string; model_name: string },
   opts?: CallOpts,

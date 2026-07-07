@@ -161,6 +161,99 @@ class DeepSeekClient(LLMClient):
         return await emb.embed(texts)
 
 
+class OpenAICompatibleClient(LLMClient):
+    """Generic OpenAI-compatible chat client backed by a persisted provider."""
+
+    def __init__(self, api_key: str, base_url: str, model: str):
+        self.api_key = api_key
+        self.model = model
+        base = base_url.rstrip("/")
+        if base.endswith("/chat/completions"):
+            self.chat_url = base
+        else:
+            self.chat_url = f"{base}/chat/completions"
+
+    async def chat(self, messages: list[dict], temperature: float = 0.1) -> str:
+        async with httpx.AsyncClient(timeout=120, verify=False) as client:
+            resp = await client.post(
+                self.chat_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "stream": False,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
+    async def stream_chat(
+        self,
+        messages: list[dict],
+        temperature: float = 0.3,
+    ) -> AsyncGenerator[str, None]:
+        async with httpx.AsyncClient(timeout=120, verify=False) as client:
+            async with client.stream(
+                "POST",
+                self.chat_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                },
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "stream": True,
+                },
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("data: "):
+                        data_str = line[6:].strip()
+                    elif line.startswith("data:"):
+                        data_str = line[5:].strip()
+                    else:
+                        continue
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError as exc:
+                        logger.warning(f"OpenAI-compatible 流式 JSON 解析失败: {data_str}, 错误: {exc}")
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        yield content
+
+
+def get_provider_llm_client(provider, model_name: str) -> LLMClient:
+    """Create a chat client from a persisted provider row."""
+    api_key = (provider.api_key or "").strip()
+    base_url = (provider.base_url or "").strip()
+    model = (model_name or "").strip()
+    if not api_key:
+        raise ValueError("Provider API Key 未配置")
+    if not base_url:
+        raise ValueError("Provider Base URL 未配置")
+    if not model:
+        raise ValueError("模型名称不能为空")
+    return OpenAICompatibleClient(api_key=api_key, base_url=base_url, model=model)
+
+
 def get_llm_client() -> LLMClient:
     """工厂函数，根据配置返回对应的 LLM 客户端"""
     provider = settings.llm_provider
