@@ -99,10 +99,11 @@ async def parse_bilibili_url(
     # 提取内部标记（yt-dlp 不认识这些 key）
     browser_cache_path = opts.pop("_browser_cache", None)
     _temp_cookie = opts.pop("_temp_cookie", False)
+    uses_browser_cookie = "cookiesfrombrowser" in opts
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+    def _extract_info(extract_opts: dict):
+        with yt_dlp.YoutubeDL(extract_opts) as ydl:
+            video_info = ydl.extract_info(url, download=False)
 
             # 首次从浏览器提取成功 → 自动缓存到文件，后续直接复用
             if browser_cache_path and ydl.cookiejar:
@@ -111,6 +112,31 @@ async def parse_bilibili_url(
                     save_browser_cookies_to_cache(browser_cache_path, ydl.cookiejar)
                 except Exception:
                     pass
+            return video_info
+
+    try:
+        try:
+            info = _extract_info(opts)
+        except Exception as exc:
+            from app.processor import (
+                format_ytdlp_error,
+                is_browser_cookie_error,
+                without_browser_cookie_opts,
+            )
+
+            if uses_browser_cookie and is_browser_cookie_error(exc):
+                try:
+                    info = _extract_info(without_browser_cookie_opts(opts))
+                except Exception as retry_exc:
+                    return StageResult(
+                        success=False,
+                        error=(
+                            "读取浏览器 Cookie 失败，已自动改为无 Cookie 解析但仍失败："
+                            f"{format_ytdlp_error(retry_exc)}"
+                        ),
+                    )
+            else:
+                return StageResult(success=False, error=f"视频解析失败: {format_ytdlp_error(exc)}")
     finally:
         # string 模式：删除临时 cookie 文件
         if _temp_cookie:

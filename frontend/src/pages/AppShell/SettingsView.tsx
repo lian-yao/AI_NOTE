@@ -176,10 +176,6 @@ function providerDraftFromPreset(
   }
 }
 
-function isConfiguredProvider(provider: IProvider) {
-  return provider.type === 'custom' || Boolean(provider.apiKey?.trim())
-}
-
 const CACHE_DIRECTORY_META: {
   key: CacheDirectoryKey
   label: string
@@ -386,11 +382,6 @@ function ProviderSection() {
   const [creating, setCreating] = useState(false)
   const [providersLoadFailed, setProvidersLoadFailed] = useState(false)
 
-  const configuredProviders = useMemo(
-    () => providers.filter(isConfiguredProvider),
-    [providers],
-  )
-
   useEffect(() => {
     let mounted = true
 
@@ -410,7 +401,7 @@ function ProviderSection() {
   useEffect(() => {
     setDrafts(current => {
       const next: Record<string, ProviderDraft> = {}
-      configuredProviders.forEach(provider => {
+      providers.forEach(provider => {
         next[provider.id] = current[provider.id] || provider
       })
       return next
@@ -418,18 +409,18 @@ function ProviderSection() {
 
     setExpanded(current => {
       const next: Record<string, boolean> = {}
-      configuredProviders.forEach(provider => {
+      providers.forEach(provider => {
         next[provider.id] = current[provider.id] ?? false
       })
       return next
     })
-  }, [configuredProviders])
+  }, [providers])
 
   useEffect(() => {
-    configuredProviders.forEach(provider => {
+    providers.forEach(provider => {
       refreshEnabledModels(provider.id)
     })
-  }, [configuredProviders])
+  }, [providers])
 
   const updateProviderDraft = (providerId: string, field: keyof ProviderDraft, value: string | number) => {
     setDrafts(prev => ({
@@ -495,17 +486,20 @@ function ProviderSection() {
       return
     }
 
+    const apiKey = draft.apiKey.trim()
+    const updatePayload = {
+      id: providerId,
+      name: draft.name.trim(),
+      base_url: draft.baseUrl.trim(),
+      logo: draft.logo,
+      type: draft.type || 'custom',
+      enabled: draft.enabled,
+      ...(apiKey || !draft.has_api_key ? { api_key: apiKey } : {}),
+    }
+
     setSavingProviderId(providerId)
     try {
-      await updateProviderById({
-        id: providerId,
-        name: draft.name.trim(),
-        api_key: draft.apiKey.trim(),
-        base_url: draft.baseUrl.trim(),
-        logo: draft.logo,
-        type: draft.type || 'custom',
-        enabled: draft.enabled,
-      })
+      await updateProviderById(updatePayload)
       await fetchProviderList()
       toast.success('Provider 配置已保存')
     } catch {
@@ -650,7 +644,7 @@ function ProviderSection() {
     ? '正在加载提供商'
     : providersLoadFailed
       ? 'Provider 配置暂未加载'
-      : `已添加 ${configuredProviders.length} 个提供商`
+      : `已添加 ${providers.length} 个提供商`
 
   return (
     <section className="space-y-4">
@@ -700,13 +694,13 @@ function ProviderSection() {
       )}
 
       <div className="space-y-3">
-        {providersLoaded && configuredProviders.length === 0 && !showAddForm && (
+        {providersLoaded && providers.length === 0 && !showAddForm && (
           <div className="rounded-xl border border-dashed border-neutral-800 bg-[#141414] px-6 py-10 text-center text-sm text-neutral-500">
             暂无 Provider 配置，添加一个 OpenAI 兼容端点后即可获取模型列表。
           </div>
         )}
 
-        {configuredProviders.map(provider => {
+        {providers.map(provider => {
           const draft = drafts[provider.id] || provider
           const isExpanded = expanded[provider.id] ?? false
           const enabledModels = enabledModelsByProvider[provider.id] || []
@@ -963,7 +957,7 @@ function ProviderInlineFields({
             type={showApiKey ? 'text' : 'password'}
             value={draft.apiKey}
             onChange={event => onChange('apiKey', event.target.value)}
-            placeholder="sk-..."
+            placeholder={draft.has_api_key ? '已配置，留空则不修改' : 'sk-...'}
             className="w-full rounded-lg border border-neutral-800 bg-[#1A1A1A] py-2 pl-3 pr-10 text-sm text-neutral-200 outline-none focus:border-neutral-600"
           />
           <button
