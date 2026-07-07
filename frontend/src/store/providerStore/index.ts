@@ -49,6 +49,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         baseUrl: item.base_url,
         type: item.type,
         enabled: item.enabled,
+        has_api_key: item.has_api_key,
       }
 
   },
@@ -97,6 +98,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               name: string
               logo: string
               api_key: string
+              has_api_key?: boolean
               base_url: string
               type: string
               enabled: number
@@ -109,6 +111,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
                 baseUrl: item.base_url,
                 type: item.type,
                 enabled: item.enabled,
+                has_api_key: item.has_api_key,
               }
             }
           ),

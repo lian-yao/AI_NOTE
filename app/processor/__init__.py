@@ -17,6 +17,14 @@ from app.schemas.transcript import TranscriptResult
 
 from app.processor.video_processor import BilibiliVideoProcessor
 
+_BROWSER_COOKIE_ERROR_MARKERS = (
+    "dpapi",
+    "decrypt",
+    "cookie database",
+    "could not copy chrome cookie database",
+    "browser cookies",
+)
+
 
 def _cookie_string_to_netscape(cookie_str: str, domain: str = ".bilibili.com") -> str:
     """将 Cookie 字符串转为 Netscape 格式文本。
@@ -67,6 +75,8 @@ def build_cookie_opts() -> dict:
     from app.core.paths import project_root
 
     source = settings.bilibili_cookie_source
+    if source not in {"string", "browser", "file", "none"}:
+        source = "string"
 
     # ── source: string ──────────────────────────────────────────────
     if source == "string":
@@ -107,6 +117,29 @@ def build_cookie_opts() -> dict:
 
     # source == "none" 或文件不存在
     return {}
+
+
+def is_browser_cookie_error(exc: BaseException) -> bool:
+    """判断 yt-dlp 异常是否来自浏览器 Cookie 读取/解密。"""
+    message = str(exc).lower()
+    return any(marker in message for marker in _BROWSER_COOKIE_ERROR_MARKERS)
+
+
+def without_browser_cookie_opts(opts: dict) -> dict:
+    """移除浏览器 Cookie 相关选项，保留其它 yt-dlp 配置。"""
+    clean = dict(opts)
+    clean.pop("cookiesfrombrowser", None)
+    clean.pop("_browser_cache", None)
+    return clean
+
+
+def format_ytdlp_error(exc: BaseException) -> str:
+    """把 yt-dlp 的异常压成适合返回给前端的短消息。"""
+    message = str(exc).strip()
+    if not message:
+        message = type(exc).__name__
+    message = message.replace("ERROR: ERROR:", "ERROR:").replace("ERROR:", "").strip()
+    return message[:300]
 
 
 def cleanup_temp_cookie(opts: dict) -> None:
