@@ -1,10 +1,18 @@
 """Transcriber configuration and model management API."""
 from __future__ import annotations
+import json
 import os
 from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 from app.core.config import settings
+from app.transcriber.model_manager import (
+    get_models_status,
+    start_download,
+    get_download_progress,
+    reset_download,
+    _ALL_MODEL_SIZES,
+)
 
 router = APIRouter(prefix="/transcribers", tags=["transcribers"])
 
@@ -13,11 +21,13 @@ AVAILABLE_TYPES = [
     {"value": "mlx-whisper", "label": "mlx-whisper"},
     {"value": "groq", "label": "Groq"},
 ]
-WHISPER_MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
+WHISPER_MODEL_SIZES = _ALL_MODEL_SIZES
 
 _CONFIG_FILE = Path(settings.data_dir) / "transcriber_config.json"
 
-def _load_config():
+
+def _load_config() -> dict:
+    """加载转写器配置（文件 + settings 默认值）。"""
     default = {
         "transcriber_type": "fast-whisper",
         "whisper_model_size": settings.whisper_model_size or "small",
@@ -30,15 +40,25 @@ def _load_config():
             pass
     return default
 
+
 _runtime_config = _load_config()
 
+
 def _save_config():
+    """持久化转写器运行时配置到 JSON 文件。"""
     _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _CONFIG_FILE.write_text(json.dumps(_runtime_config, ensure_ascii=False), encoding="utf-8")
+    _CONFIG_FILE.write_text(
+        json.dumps(_runtime_config, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+# ── 配置接口 ──
 
 
 @router.get("/config")
 def get_transcriber_config():
+    """获取转写器配置（类型、模型大小、可用选项）。"""
     return {
         "transcriber_type": _runtime_config["transcriber_type"],
         "whisper_model_size": _runtime_config["whisper_model_size"],
@@ -57,6 +77,7 @@ class TranscriberConfigUpdate(BaseModel):
 
 @router.put("/config")
 def update_transcriber_config(body: TranscriberConfigUpdate):
+    """更新转写器运行时配置（自动持久化）。"""
     updated = []
     if body.transcriber_type:
         _runtime_config["transcriber_type"] = body.transcriber_type
@@ -69,17 +90,21 @@ def update_transcriber_config(body: TranscriberConfigUpdate):
     return {"updated_fields": updated}
 
 
+# ── 模型状态接口 ──
+
+
 @router.get("/models/status")
-def get_models_status():
+def get_models_status_api():
+    """获取所有 Whisper 模型的下载状态（真实扫描 HF 缓存）。"""
+    statuses = get_models_status()
     return {
-        "whisper": [
-            {"model_size": s, "downloaded": s == _runtime_config["whisper_model_size"],
-             "downloading": False}
-            for s in WHISPER_MODEL_SIZES
-        ],
+        "whisper": statuses,
         "mlx_whisper": [],
         "mlx_available": False,
     }
+
+
+# ── 模型下载接口 ──
 
 
 class DownloadModelPayload(BaseModel):
@@ -89,18 +114,38 @@ class DownloadModelPayload(BaseModel):
 
 @router.post("/models/download")
 def download_model(body: DownloadModelPayload):
-    """Stub: model download not implemented. Returns success for development."""
-    return {"status": "started", "message": f"Mock: would download {body.model_size}"}
+    """启动模型下载（后台线程，进度通过 /models/download/{model_size}/progress 查询）。"""
+    result = start_download(body.model_size)
+    return result
 
+
+@router.get("/models/download/{model_size}/progress")
+def get_model_download_progress(model_size: str):
+    """查询单个模型的下载进度（供前端轮询）。"""
+    progress = get_download_progress(model_size)
+    if progress is None:
+        return {"model_size": model_size, "downloading": False,
+                "message": "无下载记录", "progress": 0}
+    return progress
+
+
+@router.post("/models/download/{model_size}/reset")
+def reset_model_download(model_size: str):
+    """重置下载状态（用于重试失败的下载）。"""
+    ok = reset_download(model_size)
+    return {"model_size": model_size, "reset": ok}
+
+
+# ── Whisper 自定义模型管理 ──
 
 WHISPER_MODELS_FILE = os.path.join(settings.data_dir, "whisper_models.json")
 
 
 @router.get("/whisper-models")
 def list_whisper_models():
+    """列出内建 + 自定义 Whisper 模型。"""
     custom = {}
     if os.path.isfile(WHISPER_MODELS_FILE):
-        import json
         try:
             with open(WHISPER_MODELS_FILE, encoding="utf-8") as f:
                 custom = json.load(f)
@@ -119,9 +164,9 @@ class AddWhisperModelPayload(BaseModel):
 
 @router.post("/whisper-models")
 def add_whisper_model(body: AddWhisperModelPayload):
+    """添加自定义 Whisper 模型。"""
     custom = {}
     if os.path.isfile(WHISPER_MODELS_FILE):
-        import json
         try:
             with open(WHISPER_MODELS_FILE, encoding="utf-8") as f:
                 custom = json.load(f)
@@ -129,7 +174,6 @@ def add_whisper_model(body: AddWhisperModelPayload):
             pass
     custom[body.name] = body.target
     os.makedirs(os.path.dirname(WHISPER_MODELS_FILE) or ".", exist_ok=True)
-    import json
     with open(WHISPER_MODELS_FILE, "w", encoding="utf-8") as f:
         json.dump(custom, f, ensure_ascii=False, indent=2)
     return {"status": "ok"}
@@ -137,8 +181,8 @@ def add_whisper_model(body: AddWhisperModelPayload):
 
 @router.delete("/whisper-models/{name:path}")
 def delete_whisper_model(name: str):
+    """删除自定义 Whisper 模型。"""
     if os.path.isfile(WHISPER_MODELS_FILE):
-        import json
         with open(WHISPER_MODELS_FILE, encoding="utf-8") as f:
             custom = json.load(f)
         custom.pop(name, None)

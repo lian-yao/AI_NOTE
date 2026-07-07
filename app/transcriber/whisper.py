@@ -34,7 +34,7 @@ class FasterWhisperTranscriber:
             compute_type: 计算精度（auto / float16 / int8_float16 / int8）。
                           auto 时根据设备自动选择：CUDA→float16，CPU→int8
         """
-        valid_sizes = {"tiny", "base", "small", "medium", "large-v3"}
+        valid_sizes = {"tiny", "base", "small", "medium", "large-v3", "turbo"}
         if model_size not in valid_sizes:
             raise ValueError(
                 f"无效的模型大小: {model_size}，可选: {', '.join(sorted(valid_sizes))}"

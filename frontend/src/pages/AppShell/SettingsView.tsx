@@ -45,6 +45,7 @@ import {
   getModelsStatus,
   getTranscriberConfig,
   updateTranscriberConfig,
+  getDownloadProgress,
   type ModelStatus,
   type TranscriberConfig,
 } from '@/services/transcriber'
@@ -1618,6 +1619,7 @@ function TranscriberSection() {
   const [selectedModel, setSelectedModel] = useState('')
   const [saving, setSaving] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
 
   const load = async (silent = false) => {
     try {
@@ -1639,14 +1641,59 @@ function TranscriberSection() {
     }
   }
 
+  // 只刷新模型状态，不重置用户选择
+  const refreshStatus = async () => {
+    try {
+      const statuses = await getModelsStatus({ silent: true })
+      setModelStatuses(statuses.whisper)
+    } catch {
+      // 静默失败
+    }
+  }
+
   useEffect(() => {
     load(true)
   }, [])
+
+  // 下载进度轮询：当有模型正在下载时，每 1.5 秒查询进度
+  useEffect(() => {
+    const downloadingModels = modelStatuses.filter(s => s.downloading)
+    if (downloadingModels.length === 0) return
+
+    const interval = setInterval(async () => {
+      for (const model of downloadingModels) {
+        try {
+          const progress = await getDownloadProgress(model.model_size, { silent: true })
+          if (progress) {
+            setDownloadProgress(prev => ({
+              ...prev,
+              [model.model_size]: progress.progress,
+            }))
+            // 下载完成或失败时刷新状态（不重置选择）
+            if (!progress.downloading) {
+              refreshStatus()
+              setDownloadProgress(prev => {
+                const next = { ...prev }
+                delete next[model.model_size]
+                return next
+              })
+            }
+          }
+        } catch {
+          // 静默失败
+        }
+      }
+    }, 1500)
+
+    return () => clearInterval(interval)
+  }, [modelStatuses])
 
   const currentStatus = useMemo(
     () => modelStatuses.find(status => status.model_size === selectedModel),
     [modelStatuses, selectedModel],
   )
+
+  const currentProgress = downloadProgress[selectedModel] ?? 0
 
   const save = async () => {
     setSaving(true)
@@ -1713,32 +1760,49 @@ function TranscriberSection() {
             </div>
 
             {isWhisperType(selectedType) && currentStatus && (
-              <div className="flex items-center justify-between rounded-lg border border-neutral-800 bg-[#1A1A1A] p-4">
-                <div>
-                  <div className="text-sm font-medium text-neutral-200">{selectedModel}</div>
-                  <div className="mt-1 text-xs text-neutral-500">
-                    {currentStatus.downloaded
-                      ? '模型已就绪'
-                      : currentStatus.downloading
-                        ? '模型下载中'
-                        : currentStatus.failed
-                          ? currentStatus.error || '模型下载失败'
-                          : '模型尚未下载'}
+              <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-[#1A1A1A] p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-neutral-200">{selectedModel}</div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      {currentStatus.downloaded
+                        ? '模型已就绪'
+                        : currentStatus.downloading
+                          ? `模型下载中 ${currentProgress > 0 ? `${currentProgress.toFixed(1)}%` : ''}`
+                          : currentStatus.failed
+                            ? currentStatus.error || '模型下载失败'
+                            : '模型尚未下载'}
+                    </div>
                   </div>
+                  {!currentStatus.downloaded && !currentStatus.downloading && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const result = await downloadModel({ model_size: selectedModel, transcriber_type: selectedType })
+                        if (isSkippedApiResult(result)) {
+                          toast.success('后端模型下载接口暂未实现，已跳过')
+                        } else {
+                          toast.success('模型下载已开始')
+                        }
+                        setTimeout(() => refreshStatus(), 800)
+                      }}
+                      className="flex items-center gap-1.5 rounded-lg bg-neutral-800 px-3 py-2 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
+                    >
+                      <Download size={14} />
+                      {currentStatus.failed ? '重试' : '下载'}
+                    </button>
+                  )}
+                  {currentStatus.downloading && (
+                    <Loader2 size={16} className="animate-spin text-neutral-400" />
+                  )}
                 </div>
-                {!currentStatus.downloaded && !currentStatus.downloading && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const result = await downloadModel({ model_size: selectedModel, transcriber_type: selectedType })
-                      toast.success(isSkippedApiResult(result) ? '后端模型下载接口暂未实现，已跳过' : '模型下载已开始')
-                      setTimeout(() => load(true), 1000)
-                    }}
-                    className="flex items-center gap-1.5 rounded-lg bg-neutral-800 px-3 py-2 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
-                  >
-                    <Download size={14} />
-                    {currentStatus.failed ? '重试' : '下载'}
-                  </button>
+                {currentStatus.downloading && currentProgress > 0 && (
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all duration-500"
+                      style={{ width: `${Math.min(currentProgress, 100)}%` }}
+                    />
+                  </div>
                 )}
               </div>
             )}
