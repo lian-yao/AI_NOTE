@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react'
 import {
   ChevronDown,
+  ChevronRight,
   ExternalLink,
   Link2,
   Loader2,
@@ -404,7 +405,15 @@ export default function GenerateView({
   const [activePromptTemplateId, setActivePromptTemplateId] = useState<string | null>(null)
   const [savedPromptTemplates, setSavedPromptTemplates] = useState<PromptTemplate[]>(() =>
     listSavedPromptTemplates(),
-  )
+ )
+  const [noteFormat, setNoteFormat] = useState('')
+  const [noteFormatSaved, setNoteFormatSaved] = useState(true)
+  const [formatSectionOpen, setFormatSectionOpen] = useState(true)
+  const [formatTemplateName, setFormatTemplateName] = useState('')
+  const [formatTemplates, setFormatTemplates] = useState<{name: string; content: string}[]>(() => {
+    try { return JSON.parse(localStorage.getItem('note-format-templates') || '[]') }
+    catch { return [] }
+  })
   const [selectedModel, setSelectedModel] = useState('')
   const [selectedStyle, setSelectedStyle] = useState('minimal')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -493,6 +502,13 @@ export default function GenerateView({
       templateId: activePromptTemplateId,
     })
   }, [activePromptTemplateId, prompt, promptName])
+
+  useEffect(() => {
+    fetch('/api/v1/system/note-format')
+      .then(r => r.json())
+      .then(d => { if (d.format) setNoteFormat(d.format) })
+      .catch(() => {})
+  }, [])
 
   const selectedModelItem = useMemo(
     () => modelList.find(model => model.model_name === selectedModel),
@@ -1113,6 +1129,91 @@ export default function GenerateView({
                     </button>
                   </div>
                 )}
+              <div className="border-t border-neutral-800/50 pt-4">
+                <div
+                  className="mb-3 flex cursor-pointer items-center gap-2"
+                  onClick={() => setFormatSectionOpen(!formatSectionOpen)}
+                >
+                  {formatSectionOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  <h3 className="text-sm font-bold text-neutral-300">文档格式</h3>
+                  <span className="text-xs text-neutral-500">({noteFormatSaved ? '已保存' : '未保存'})</span>
+                </div>
+                {formatSectionOpen && (
+                  <div className="space-y-3">
+                    <textarea
+                      value={noteFormat}
+                      onChange={e => { setNoteFormat(e.target.value); setNoteFormatSaved(false) }}
+                      placeholder="在此编辑笔记输出格式模板..."
+                      className="min-h-[120px] w-full resize-none rounded-xl border border-neutral-800 bg-[#141414] p-3 text-xs text-neutral-300 transition-colors placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          fetch('/api/v1/system/note-format', {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({format: noteFormat})
+                          }).then(r => r.json()).then(d => { if (d.saved) setNoteFormatSaved(true); toast.success('文档格式已保存') }).catch(() => toast.error('保存失败'))
+                        }}
+                        className="rounded-lg bg-neutral-800 px-4 py-1.5 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
+                      >
+                        {noteFormatSaved ? '保存格式' : '· 未保存'}
+                      </button>
+                      <input
+                        type="text"
+                        value={formatTemplateName}
+                        onChange={e => setFormatTemplateName(e.target.value)}
+                        placeholder="模板名称"
+                        className="h-8 flex-1 rounded-lg border border-neutral-800 bg-[#141414] px-3 text-xs text-neutral-300 outline-none transition-colors placeholder:text-neutral-600 focus:border-neutral-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!formatTemplateName.trim() || !noteFormat.trim()) return
+                          const updated = [...formatTemplates, { name: formatTemplateName.trim(), content: noteFormat }]
+                          setFormatTemplates(updated)
+                          localStorage.setItem('note-format-templates', JSON.stringify(updated))
+                          setFormatTemplateName('')
+                          toast.success('格式模板已保存')
+                        }}
+                        className="shrink-0 rounded-lg bg-neutral-800 px-4 py-1.5 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
+                      >
+                        保存为模板
+                      </button>
+                    </div>
+                    {formatTemplates.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {formatTemplates.map((t, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-neutral-700 bg-[#1A1A1A] px-2.5 py-0.5 text-xs text-neutral-300"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => { setNoteFormat(t.content); setNoteFormatSaved(false) }}
+                              className="hover:text-neutral-100"
+                            >
+                              {t.name}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const updated = formatTemplates.filter((_, i) => i !== idx)
+                                setFormatTemplates(updated)
+                                localStorage.setItem('note-format-templates', JSON.stringify(updated))
+                              }}
+                              className="text-neutral-500 transition-colors hover:text-red-400"
+                            >
+                              <X size={12} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
               </div>
             </div>
             </div>

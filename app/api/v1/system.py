@@ -278,6 +278,100 @@ async def deploy_status():
 
 
 
+_NOTE_FORMAT_PATH: _Path | None = None
+
+def _get_note_format_path() -> _Path:
+    global _NOTE_FORMAT_PATH
+    if _NOTE_FORMAT_PATH is None:
+        _NOTE_FORMAT_PATH = _Path(settings.data_dir) / "note_format.json"
+    return _NOTE_FORMAT_PATH
+
+
+@router.get("/note-format")
+def get_note_format():
+    """获取笔记格式模板。"""
+    p = _get_note_format_path()
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return {"format": data.get("format", "")}
+        except:
+            pass
+    return {"format": ""}
+
+
+@router.put("/note-format")
+def set_note_format(body: dict):
+    """保存笔记格式模板。"""
+    fmt = body.get("format", "")
+    p = _get_note_format_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"format": fmt}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"saved": True, "length": len(fmt)}
+
+
+_TEMPLATES_PATH: _Path | None = None
+
+def _get_templates_path() -> _Path:
+    global _TEMPLATES_PATH
+    if _TEMPLATES_PATH is None:
+        _TEMPLATES_PATH = _Path(settings.data_dir) / "note_format_templates.json"
+    return _TEMPLATES_PATH
+
+
+def _load_templates() -> dict:
+    p = _get_templates_path()
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except:
+            pass
+    return {}
+
+
+@router.get("/note-format/templates")
+def list_note_format_templates():
+    return {"templates": _load_templates()}
+
+
+@router.post("/note-format/templates")
+def save_note_format_template(body: dict):
+    name = (body.get("name") or "").strip()
+    fmt = body.get("format", "")
+    if not name or not fmt:
+        return {"saved": False, "error": "name and format are required"}
+    templates = _load_templates()
+    templates[name] = fmt
+    _get_templates_path().parent.mkdir(parents=True, exist_ok=True)
+    _get_templates_path().write_text(json.dumps(templates, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"saved": True, "name": name, "count": len(templates)}
+
+
+@router.delete("/note-format/templates/{name}")
+def delete_note_format_template(name: str):
+    import urllib.parse
+    name = urllib.parse.unquote(name)
+    templates = _load_templates()
+    if name in templates:
+        del templates[name]
+        _get_templates_path().write_text(json.dumps(templates, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"deleted": True, "name": name}
+    return {"deleted": False, "error": "template not found"}
+
+
+@router.post("/note-format/templates/{name}/apply")
+def apply_note_format_template(name: str):
+    import urllib.parse
+    name = urllib.parse.unquote(name)
+    templates = _load_templates()
+    fmt = templates.get(name)
+    if not fmt:
+        return {"applied": False, "error": "template not found"}
+    p = _get_note_format_path()
+    p.write_text(json.dumps({"format": fmt}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"applied": True, "name": name, "length": len(fmt)}
+
+
 _EMBEDDING_CONFIG_PATH: _Path | None = None
 
 def _get_embedding_config_path() -> _Path:

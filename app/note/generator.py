@@ -74,6 +74,19 @@ class NoteGenerator:
         """
         self.llm = llm or get_llm_client()
 
+    @staticmethod
+    def _load_format_template() -> str:
+        import json
+        from pathlib import Path
+        from app.core.config import settings
+        try:
+            p = Path(settings.data_dir) / "note_format.json"
+            if p.exists():
+                return json.loads(p.read_text(encoding="utf-8")).get("format", "")
+        except:
+            pass
+        return ""
+
     async def generate(
         self,
         transcript_text: str,
@@ -123,6 +136,11 @@ class NoteGenerator:
 ## 金句摘录
 > 精彩语句
 > -- 出处（MM:SS）"""
+
+        # 加载输出格式模板
+        format_template = self._load_format_template()
+        if format_template:
+            system_prompt += f"\n\n{format_template}"
 
         # 2. 追加风格指令
         style_instruction = self._STYLE_INSTRUCTIONS.get(style)
