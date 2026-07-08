@@ -1194,6 +1194,7 @@ function DownloaderSection() {
   const [qrPolling, setQrPolling] = useState(false)
   const [qrSession, setQrSession] = useState<BilibiliQrCodeSession | null>(null)
   const [qrStatus, setQrStatus] = useState<BilibiliQrCodePollResult | null>(null)
+  const [qualitySetting, setQualitySetting] = useState(() => localStorage.getItem('download_quality') || '1080p')
   const [cookieValidation, setCookieValidation] = useState<DownloaderCookieValidation | null>(null)
   const [proxy, setProxy] = useState<ProxyConfig | null>(null)
   const [proxyDraft, setProxyDraft] = useState({ enabled: false, url: '' })
@@ -1479,6 +1480,26 @@ function DownloaderSection() {
               )}
             </div>
           )}
+        </div>
+
+        <div className="rounded-lg border border-neutral-800 bg-[#1A1A1D] p-5">
+          <div className="mb-4">
+            <div className="mb-1 font-medium text-neutral-200">下载质量</div>
+            <div className="text-xs text-neutral-500">设置视频下载清晰度，仅在支持的分辨率下生效。</div>
+          </div>
+          <div className="flex items-center gap-3">
+            <select
+              value={qualitySetting}
+              onChange={e => { setQualitySetting(e.target.value); localStorage.setItem('download_quality', e.target.value) }}
+              className="h-10 rounded-lg border border-neutral-700 bg-neutral-800 px-3 text-sm text-neutral-200 outline-none transition-colors focus:border-neutral-500"
+            >
+              <option value="360p">360p</option>
+              <option value="480p">480p</option>
+              <option value="720p">720p</option>
+              <option value="1080p">1080p</option>
+            </select>
+            <span className="text-xs text-neutral-500">当前：{qualitySetting}</span>
+          </div>
         </div>
 
         <div className="p-6">

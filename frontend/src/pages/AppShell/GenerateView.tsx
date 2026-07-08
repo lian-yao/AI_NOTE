@@ -170,6 +170,10 @@ function normalizeVideoStatus(status: string): Task['status'] {
   return 'RUNNING'
 }
 
+function getDownloadQuality(): string {
+  return localStorage.getItem('download_quality') || '1080p'
+}
+
 function extractPageParam(url: string): string {
   if (!url) return '1'
   try {
@@ -255,7 +259,7 @@ function backendVideoToTask(video: VideoItem, markdown: string): Task {
       link: true,
       screenshot: false,
       platform: 'bilibili',
-      quality: '1080p',
+      quality: getDownloadQuality(),
       model_name: isMockBackend ? 'mock-backend' : 'backend',
       provider_id: isMockBackend ? 'mock-backend' : 'backend',
       format: ['summary'],
@@ -555,7 +559,7 @@ export default function GenerateView({
       const payload = {
         video_url: targetUrl,
         platform,
-        quality: '1080p' as const,
+        quality: getDownloadQuality() as const,
         link: true,
         screenshot: false,
         model_name: selectedModelItem.model_name,
