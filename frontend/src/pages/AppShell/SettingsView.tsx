@@ -57,8 +57,13 @@ import {
   getTranscriberConfig,
   updateTranscriberConfig,
   getDownloadProgress,
+  getGPUInfo,
+  installGPUDrivers,
+  getGPUInstallProgress,
   type ModelStatus,
   type TranscriberConfig,
+  type GPUInfo,
+  type GPUInstallProgress,
 } from '@/services/transcriber'
 import { getDeployStatus, getSystemStats, type DeployStatus, type SystemStats } from '@/services/system'
 import { isSkippedApiResult } from '@/services/fallback'
@@ -1824,6 +1829,7 @@ const isWhisperType = (type: string) => type === 'fast-whisper' || type === 'mlx
 const fallbackTranscriberConfig: TranscriberConfig = {
   transcriber_type: 'fast-whisper',
   whisper_model_size: 'base',
+  whisper_device: 'auto',
   available_types: [
     { value: 'fast-whisper', label: 'fast-whisper' },
     { value: 'mlx-whisper', label: 'mlx-whisper' },
@@ -1837,9 +1843,16 @@ function TranscriberSection() {
   const [modelStatuses, setModelStatuses] = useState<ModelStatus[]>([])
   const [selectedType, setSelectedType] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
+  const [selectedDevice, setSelectedDevice] = useState('auto')
   const [saving, setSaving] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
+
+  // GPU 相关状态
+  const [gpuInfo, setGpuInfo] = useState<GPUInfo | null>(null)
+  const [gpuInstalling, setGpuInstalling] = useState(false)
+  const [gpuInstallTaskId, setGpuInstallTaskId] = useState<string | null>(null)
+  const [gpuInstallProgress, setGpuInstallProgress] = useState<GPUInstallProgress | null>(null)
 
   const load = async (silent = false) => {
     try {
@@ -1850,14 +1863,26 @@ function TranscriberSection() {
       setConfig(cfg)
       setSelectedType(cfg.transcriber_type)
       setSelectedModel(cfg.whisper_model_size)
+      setSelectedDevice(cfg.whisper_device || 'auto')
       setModelStatuses(statuses.whisper)
       setLoadFailed(false)
     } catch {
       setConfig(fallbackTranscriberConfig)
       setSelectedType(current => current || fallbackTranscriberConfig.transcriber_type)
       setSelectedModel(current => current || fallbackTranscriberConfig.whisper_model_size)
+      setSelectedDevice(current => current || fallbackTranscriberConfig.whisper_device)
       setModelStatuses([])
       setLoadFailed(true)
+    }
+  }
+
+  // 加载 GPU 信息
+  const loadGPUInfo = async () => {
+    try {
+      const info = await getGPUInfo({ silent: true })
+      setGpuInfo(info)
+    } catch {
+      // 静默失败
     }
   }
 
@@ -1873,6 +1898,7 @@ function TranscriberSection() {
 
   useEffect(() => {
     load(true)
+    loadGPUInfo()
   }, [])
 
   // 下载进度轮询：当有模型正在下载时，每 1.5 秒查询进度
@@ -1889,7 +1915,6 @@ function TranscriberSection() {
               ...prev,
               [model.model_size]: progress.progress,
             }))
-            // 下载完成或失败时刷新状态（不重置选择）
             if (!progress.downloading) {
               refreshStatus()
               setDownloadProgress(prev => {
@@ -1908,6 +1933,31 @@ function TranscriberSection() {
     return () => clearInterval(interval)
   }, [modelStatuses])
 
+  // GPU 安装进度轮询
+  useEffect(() => {
+    if (!gpuInstallTaskId || !gpuInstalling) return
+
+    const interval = setInterval(async () => {
+      try {
+        const progress = await getGPUInstallProgress(gpuInstallTaskId, { silent: true })
+        setGpuInstallProgress(progress)
+        if (progress.status === 'completed') {
+          setGpuInstalling(false)
+          // 刷新 GPU 信息
+          loadGPUInfo()
+          toast.success('GPU 驱动安装完成，可启用 GPU 加速')
+        } else if (progress.status === 'failed') {
+          setGpuInstalling(false)
+          toast.error(progress.error || 'GPU 驱动安装失败')
+        }
+      } catch {
+        // 静默失败
+      }
+    }, 1500)
+
+    return () => clearInterval(interval)
+  }, [gpuInstallTaskId, gpuInstalling])
+
   const currentStatus = useMemo(
     () => modelStatuses.find(status => status.model_size === selectedModel),
     [modelStatuses, selectedModel],
@@ -1921,12 +1971,31 @@ function TranscriberSection() {
       await updateTranscriberConfig({
         transcriber_type: selectedType,
         whisper_model_size: isWhisperType(selectedType) ? selectedModel : undefined,
+        whisper_device: selectedDevice,
       })
       toast.success('转写器配置已保存')
     } finally {
       setSaving(false)
     }
   }
+
+  // 安装 GPU 驱动
+  const handleInstallGPU = async () => {
+    setGpuInstalling(true)
+    setGpuInstallProgress(null)
+    try {
+      const result = await installGPUDrivers()
+      setGpuInstallTaskId(result.task_id)
+      toast.success('GPU 驱动安装已启动')
+    } catch {
+      setGpuInstalling(false)
+      toast.error('启动 GPU 驱动安装失败')
+    }
+  }
+
+  const gpuAvailable = gpuInfo?.cuda_available === true
+  const gpuDepsReady = gpuInfo?.gpu_deps_installed === true
+  const gpuEnabled = selectedDevice === 'cuda'
 
   return (
     <section>
@@ -1978,6 +2047,112 @@ function TranscriberSection() {
                 </div>
               )}
             </div>
+
+            {/* ── GPU 加速区域 ── */}
+            {isWhisperType(selectedType) && (
+              <div className="rounded-lg border border-neutral-800 bg-[#1A1A1A] p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-neutral-200">GPU 加速</div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      {gpuAvailable
+                        ? gpuInfo?.gpu_name
+                          ? `检测到: ${gpuInfo.gpu_name}`
+                          : '检测到 NVIDIA GPU'
+                        : '未检测到 NVIDIA GPU，仅支持 CPU 转写'}
+                    </div>
+                  </div>
+                  {gpuAvailable && gpuDepsReady && (
+                    <IconSwitch
+                      checked={gpuEnabled}
+                      label={gpuEnabled ? '已启用 GPU 加速' : '启用 GPU 加速'}
+                      onClick={() =>
+                        setSelectedDevice(gpuEnabled ? 'cpu' : 'cuda')
+                      }
+                    />
+                  )}
+                </div>
+
+                {gpuAvailable && (
+                  <div className="space-y-2">
+                    {/* CUDA 版本信息 */}
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-500">
+                      {gpuInfo?.cuda_version && (
+                        <span>CUDA 版本: {gpuInfo.cuda_version}</span>
+                      )}
+                      {gpuInfo?.driver_version && (
+                        <span>驱动版本: {gpuInfo.driver_version}</span>
+                      )}
+                      {gpuInfo?.recommended_package && (
+                        <span>推荐包: {gpuInfo.recommended_package}</span>
+                      )}
+                    </div>
+
+                    {/* GPU 依赖状态 */}
+                    {gpuDepsReady ? (
+                      <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                        <CheckCircle2 size={14} />
+                        GPU 驱动已安装，可启用 GPU 加速
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                          <span>GPU 驱动未安装</span>
+                        </div>
+                        {gpuInstalling ? (
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2 text-xs text-neutral-400">
+                              <Loader2 size={14} className="animate-spin" />
+                              {gpuInstallProgress?.message || '正在安装...'}
+                            </div>
+                            {gpuInstallProgress && gpuInstallProgress.progress > 0 && (
+                              <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
+                                <div
+                                  className="h-full rounded-full bg-primary transition-all duration-500"
+                                  style={{ width: `${Math.min(gpuInstallProgress.progress, 100)}%` }}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleInstallGPU}
+                            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary/80"
+                          >
+                            <Download size={14} />
+                            安装 GPU 驱动（{gpuInfo?.recommended_package || 'nvidia-cublas-cu12'}）
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 设备选择（手动选择） */}
+                <div className="mt-3 border-t border-neutral-800 pt-3">
+                  <label className="mb-2 block text-xs font-medium text-neutral-400">
+                    转写设备
+                  </label>
+                  <select
+                    value={selectedDevice}
+                    onChange={event => setSelectedDevice(event.target.value)}
+                    className="w-full rounded-lg border border-neutral-800 bg-[#101010] px-3 py-2 text-sm text-neutral-200 outline-none"
+                  >
+                    <option value="auto">自动（检测到 GPU 则使用）</option>
+                    <option value="cpu">CPU（不使用 GPU）</option>
+                    <option value="cuda">CUDA（强制 GPU）</option>
+                  </select>
+                  <div className="mt-1.5 text-[11px] text-neutral-500">
+                    {selectedDevice === 'auto'
+                      ? '自动检测 GPU 可用性，有则使用 GPU，无则降级 CPU'
+                      : selectedDevice === 'cuda'
+                        ? '强制使用 GPU，如驱动不可用将降级到 CPU'
+                        : '始终使用 CPU 转写，速度较慢但兼容性最好'}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {isWhisperType(selectedType) && currentStatus && (
               <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-[#1A1A1A] p-4">
@@ -2048,6 +2223,7 @@ function MonitorSection() {
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
+  const [gpuInfo, setGpuInfo] = useState<GPUInfo | null>(null)
 
   const load = async (silent = false) => {
     setLoading(true)
@@ -2069,8 +2245,18 @@ function MonitorSection() {
     }
   }
 
+  const loadGPU = async () => {
+    try {
+      const info = await getGPUInfo({ silent: true })
+      setGpuInfo(info)
+    } catch {
+      // 静默
+    }
+  }
+
   useEffect(() => {
     load(true)
+    loadGPU()
   }, [])
 
   const backendOk = status?.backend.status === 'ok' || status?.backend.status === 'running'
@@ -2080,7 +2266,7 @@ function MonitorSection() {
       <div className="mb-4 flex justify-end">
         <button
           type="button"
-          onClick={() => load()}
+          onClick={() => { load(); loadGPU(); }}
           disabled={loading}
           className="rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-300 transition-colors hover:bg-neutral-700 disabled:opacity-50"
         >
@@ -2119,8 +2305,14 @@ function MonitorSection() {
         <StatusCard
           icon={<Database size={18} />}
           title="CUDA"
-          value={status?.cuda.available ? status.cuda.gpu_name || '已启用' : '未启用'}
-          ok={status?.cuda.available}
+          value={
+            gpuInfo?.cuda_available
+              ? `${gpuInfo.gpu_name || 'NVIDIA GPU'} | CUDA ${gpuInfo.cuda_version || '?'} | cuBLAS ${gpuInfo.gpu_deps_installed ? '✓' : '✗'}`
+              : status?.cuda.available
+                ? status.cuda.gpu_name || '已启用'
+                : '未启用'
+          }
+          ok={gpuInfo?.cuda_available || status?.cuda.available}
         />
         <StatusCard
           icon={<VideoIcon size={18} />}

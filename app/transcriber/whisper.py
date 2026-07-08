@@ -24,14 +24,18 @@ warnings.filterwarnings(
 def _setup_cuda_dlls() -> bool:
     """确保 cuBLAS DLL 可被 ctranslate2 加载。
 
-    自动发现 nvidia-cublas-cu12 pip 包的 bin 目录，
+    自动发现 nvidia-cublas-cu12 或 nvidia-cublas-cu11 pip 包的 bin 目录，
     将必要的 DLL 复制到 ctranslate2 包目录下（同级加载策略）。
     返回 True 表示 CUDA DLL 已就绪。
     """
     if sys.platform != "win32":
         return True
 
-    _REQUIRED = ("cublas64_12.dll", "cublasLt64_12.dll")
+    # 支持 CUDA 12.x 和 CUDA 11.x 两套 DLL
+    _DLL_VERSIONS = (
+        ("cublas64_12.dll", "cublasLt64_12.dll"),   # CUDA 12.x
+        ("cublas64_11.dll", "cublasLt64_11.dll"),   # CUDA 11.x
+    )
 
     try:
         import ctranslate2 as _ct2
@@ -39,23 +43,45 @@ def _setup_cuda_dlls() -> bool:
     except Exception:
         return False
 
-    # 已存在 → 无需操作
-    if all((_ct2_dir / d).exists() for d in _REQUIRED):
-        return True
+    # 检查是否已有任一版本的 DLL 可用
+    for _dll_set in _DLL_VERSIONS:
+        if all((_ct2_dir / d).exists() for d in _dll_set):
+            return True
 
-    # 自动发现 nvidia-cublas-cu12 的 bin 目录
+    # 尝试发现 nvidia-cublas-cuXX 的 bin 目录
     _cublas_bin = None
-    try:
-        import nvidia.cublas
-        _cublas_bin = Path(nvidia.cublas.__path__[0]) / "bin"
-    except ImportError:
-        pass
+    _found_version = None
 
+    # 先尝试 nvidia.cublas 包 (cu12)
+    for _pkg_name in ("nvidia.cublas",):
+        try:
+            _mod = __import__(_pkg_name, fromlist=["__path__"])
+            _bin = Path(_mod.__path__[0]) / "bin"
+            for _dll_set in _DLL_VERSIONS:
+                if (_bin / _dll_set[0]).exists():
+                    _cublas_bin = _bin
+                    _found_version = _dll_set
+                    break
+            if _cublas_bin:
+                break
+        except ImportError:
+            pass
+
+    # 回退：扫描 sys.path 中可能的 site-packages 目录
     if _cublas_bin is None:
         for _site in sys.path:
-            _candidate = Path(_site) / "nvidia" / "cublas" / "bin"
-            if (_candidate / "cublas64_12.dll").exists():
-                _cublas_bin = _candidate
+            _site_path = Path(_site)
+            for _nvidia_pkg in ("nvidia",):
+                _pkg_dir = _site_path / _nvidia_pkg / "cublas" / "bin"
+                if _pkg_dir.exists():
+                    for _dll_set in _DLL_VERSIONS:
+                        if (_pkg_dir / _dll_set[0]).exists():
+                            _cublas_bin = _pkg_dir
+                            _found_version = _dll_set
+                            break
+                    if _cublas_bin:
+                        break
+            if _cublas_bin:
                 break
 
     if _cublas_bin is None:
@@ -63,7 +89,7 @@ def _setup_cuda_dlls() -> bool:
 
     # 复制 DLL 到 ctranslate2 目录
     import shutil
-    for _dll in _REQUIRED:
+    for _dll in _found_version:
         _src = _cublas_bin / _dll
         if _src.exists() and not (_ct2_dir / _dll).exists():
             try:
@@ -71,7 +97,7 @@ def _setup_cuda_dlls() -> bool:
             except Exception:
                 return False
 
-    return all((_ct2_dir / d).exists() for d in _REQUIRED)
+    return all((_ct2_dir / d).exists() for d in _found_version)
 
 
 _HAS_CUDA_DLLS = _setup_cuda_dlls()
@@ -169,8 +195,8 @@ class FasterWhisperTranscriber:
             if not _HAS_CUDA_DLLS:
                 logger.warning(
                     "CUDA 设备已配置但未找到 cuBLAS 库。"
-                    "请运行: pip install nvidia-cublas-cu12  以启用 GPU 加速。"
-                    "当前将降级到 CPU。"
+                    "请在设置页 → 本地转写 → GPU 加速中点击安装 GPU 驱动。"
+                    "当前将尝试 CUDA，如失败则降级到 CPU。"
                 )
                 devices_to_try = ["cuda", "cpu"]
             else:
@@ -188,10 +214,14 @@ class FasterWhisperTranscriber:
                     compute_type=dev_ct,
                 )
                 if dev != self.device:
-                    logger.warning(
-                        f"Whisper 已从 {self.device} 降级到 {dev}"
-                        + (f"（原因: {last_error}）" if last_error else "")
-                    )
+                    # auto → cuda 是自动选择最优设备，不是降级
+                    if self.device == "auto":
+                        logger.info(f"Whisper 自动选择设备: {dev}")
+                    else:
+                        logger.warning(
+                            f"Whisper 已从 {self.device} 降级到 {dev}"
+                            + (f"（原因: {last_error}）" if last_error else "")
+                        )
                 return
             except (RuntimeError, ValueError) as e:
                 last_error = str(e)
