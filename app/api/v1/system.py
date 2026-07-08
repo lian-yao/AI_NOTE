@@ -15,6 +15,8 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
+import json
+from pathlib import Path as _Path
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -91,7 +93,7 @@ def get_system_config():
         "transcriber_mode": tc.get("transcriber_type", "local"),
         "whisper_model_size": tc.get("whisper_model_size", settings.whisper_model_size),
         "whisper_device": settings.whisper_device,
-        "embedding_model": "text-embedding-v3",
+        "embedding_model": get_embedding_model_config()["model"],
         "retrieval_top_k": settings.retrieval_top_k,
         "data_dir": settings.data_dir,
         "video_retention": getattr(settings, 'video_retention', 'processed'),
@@ -274,6 +276,37 @@ async def deploy_status():
         }
     }
 
+
+
+_EMBEDDING_CONFIG_PATH: _Path | None = None
+
+def _get_embedding_config_path() -> _Path:
+    global _EMBEDDING_CONFIG_PATH
+    if _EMBEDDING_CONFIG_PATH is None:
+        _EMBEDDING_CONFIG_PATH = _Path(settings.data_dir) / "embedding_config.json"
+    return _EMBEDDING_CONFIG_PATH
+
+
+@router.get("/embedding-model")
+def get_embedding_model_config():
+    """获取嵌入模型配置。"""
+    p = _get_embedding_config_path()
+    if p.exists():
+        try:
+            return {"model": json.loads(p.read_text(encoding="utf-8")).get("model", "text-embedding-v3")}
+        except:
+            pass
+    return {"model": "text-embedding-v3"}
+
+
+@router.put("/embedding-model")
+def set_embedding_model_config(body: dict):
+    """设置嵌入模型配置。"""
+    model = (body.get("model") or "text-embedding-v3").strip()
+    p = _get_embedding_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"model": model}), encoding="utf-8")
+    return {"model": model, "saved": True}
 
 # ── GPU 加速相关接口 ──
 

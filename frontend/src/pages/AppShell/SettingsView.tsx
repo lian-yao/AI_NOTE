@@ -1195,6 +1195,7 @@ function DownloaderSection() {
   const [qrSession, setQrSession] = useState<BilibiliQrCodeSession | null>(null)
   const [qrStatus, setQrStatus] = useState<BilibiliQrCodePollResult | null>(null)
   const [qualitySetting, setQualitySetting] = useState(() => localStorage.getItem('download_quality') || '1080p')
+  const [embeddingModel, setEmbeddingModel] = useState<string | null>(null)
   const [cookieValidation, setCookieValidation] = useState<DownloaderCookieValidation | null>(null)
   const [proxy, setProxy] = useState<ProxyConfig | null>(null)
   const [proxyDraft, setProxyDraft] = useState({ enabled: false, url: '' })
@@ -1282,6 +1283,13 @@ function DownloaderSection() {
       if (timer !== undefined) window.clearTimeout(timer)
     }
   }, [qrSession])
+
+  useEffect(() => {
+    fetch("/api/v1/system/embedding-model")
+      .then(r => r.json())
+      .then(d => { if (d.model) setEmbeddingModel(d.model) })
+      .catch(() => {})
+  }, [])
 
   const saveCookie = async () => {
     await updateDownloaderCookie({ platform: 'bilibili', cookie })
@@ -1499,6 +1507,25 @@ function DownloaderSection() {
               <option value="1080p">1080p</option>
             </select>
             <span className="text-xs text-neutral-500">当前：{qualitySetting}</span>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-neutral-800 bg-[#1A1A1D] p-5">
+          <div className="mb-4">
+            <div className="mb-1 font-medium text-neutral-200">嵌入模型</div>
+            <div className="text-xs text-neutral-500">控制知识库向量化时使用的嵌入模型。保存后需重新提交视频生成笔记才会生效。</div>
+          </div>
+          <div className="flex items-center gap-3">
+            <select
+              value={embeddingModel || 'text-embedding-v3'}
+              onChange={e => { setEmbeddingModel(e.target.value); fetch('/api/v1/system/embedding-model', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model: e.target.value}) }).catch(() => {}) }}
+              className="h-10 rounded-lg border border-neutral-700 bg-neutral-800 px-3 text-sm text-neutral-200 outline-none transition-colors focus:border-neutral-500"
+            >
+              <option value="text-embedding-v3">text-embedding-v3</option>
+              <option value="text-embedding-v2">text-embedding-v2</option>
+              <option value="text-embedding-v1">text-embedding-v1</option>
+            </select>
+            <span className="text-xs text-neutral-500">当前：{embeddingModel}</span>
           </div>
         </div>
 

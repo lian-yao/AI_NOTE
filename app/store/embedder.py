@@ -6,8 +6,20 @@ from app.core.config import settings
 class EmbeddingClient:
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or settings.embedding_api_key or settings.tongyi_api_key
-        self.model = model or settings.embedding_model
+        self.model = model or self._load_embedding_model() or settings.embedding_model
         self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+
+    @staticmethod
+    def _load_embedding_model() -> str | None:
+        import json
+        from pathlib import Path
+        try:
+            p = Path(settings.data_dir) / "embedding_config.json"
+            if p.exists():
+                return json.loads(p.read_text(encoding="utf-8")).get("model")
+        except:
+            pass
+        return None
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         """
