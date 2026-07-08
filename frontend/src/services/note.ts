@@ -20,6 +20,7 @@ export interface GenerateNotePayload {
   format?: string[]
   style?: string
   extras?: string
+  note_format?: string
   video_understanding?: boolean
   video_interval?: number
   grid_size?: number[]
@@ -191,6 +192,7 @@ export const generateNote = async (data: GenerateNotePayload): Promise<GenerateN
     format: normalizeFormat(data),
     style: data.style || 'minimal',
     extras: data.extras,
+    note_format: data.note_format,
     video_understanding: data.video_understanding ?? false,
     video_interval: data.video_interval ?? 6,
     grid_size: data.grid_size ?? [2, 2],

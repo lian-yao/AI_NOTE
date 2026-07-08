@@ -740,6 +740,7 @@ class PipelineOrchestrator:
             # 读取用户配置的笔记风格和自定义提示词
             note_style = task.options.get("style", "minimal")
             note_extras = task.options.get("extras")
+            note_format = task.options.get("note_format")
 
             from app.note.generator import NoteGenerator
             task_llm = self._resolve_task_llm(task, db)
@@ -749,6 +750,7 @@ class PipelineOrchestrator:
                 video_meta,
                 style=note_style,
                 extras=note_extras,
+                format_name=note_format,
             )
             note_content = note_result.get("markdown_content", transcript_text)
             note_file.write_text(note_content, encoding="utf-8")

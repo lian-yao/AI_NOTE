@@ -75,12 +75,26 @@ class NoteGenerator:
         self.llm = llm or get_llm_client()
 
     @staticmethod
-    def _load_format_template() -> str:
+    def _load_format_template(format_name: str | None = None) -> str:
         import json
         from pathlib import Path
         from app.core.config import settings
+        data_dir = Path(settings.data_dir)
+
+        # If a specific format name is given, load from named templates
+        if format_name:
+            templates_path = data_dir / "note_format_templates.json"
+            if templates_path.exists():
+                try:
+                    templates = json.loads(templates_path.read_text(encoding="utf-8"))
+                    if format_name in templates:
+                        return templates[format_name]
+                except Exception:
+                    pass
+
+        # Fall back to the default single-format file
         try:
-            p = Path(settings.data_dir) / "note_format.json"
+            p = data_dir / "note_format.json"
             if p.exists():
                 return json.loads(p.read_text(encoding="utf-8")).get("format", "")
         except:
@@ -93,6 +107,7 @@ class NoteGenerator:
         video_meta: Dict[str, Any],
         style: str = "minimal",
         extras: str | None = None,
+        format_name: str | None = None,
     ) -> Dict[str, Any]:
         """生成结构化 Markdown 笔记。
 
@@ -115,30 +130,10 @@ class NoteGenerator:
 4. 完整性：覆盖所有重要知识点
 5. 客观性：保持中立语气
 
-## 输出格式
-# {视频标题}
+"""
 
-## 摘要
-用 2-4 句话概括核心内容。
-
-## 关键词
-- 关键词1
-- 关键词2
-
-## 内容分块
-### 章节一：{标题}（MM:SS - MM:SS）
-用 1-3 句话总结该时间块的核心内容，并保留关键细节。
-
-## 核心观点总结
-1. ...
-2. ...
-
-## 金句摘录
-> 精彩语句
-> -- 出处（MM:SS）"""
-
-        # 加载输出格式模板
-        format_template = self._load_format_template()
+        # 加载输出格式模板（format_name 指定时从命名模板加载）
+        format_template = self._load_format_template(format_name)
         if format_template:
             system_prompt += f"\n\n{format_template}"
 

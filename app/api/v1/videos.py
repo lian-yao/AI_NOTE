@@ -77,6 +77,7 @@ class VideoProcessRequest(BaseModel):
     format: list[str] | None = None    # 输出格式: summary/toc/link/screenshot
     style: str | None = None           # 笔记风格: minimal/detailed/tutorial/academic/...
     extras: str | None = None          # 自定义提示词内容
+    note_format: str | None = None     # 命名格式模板（如"知识课程结构化笔记"），为空则用默认格式
     video_understanding: bool = False
     video_interval: int = 6
     grid_size: list[int] | None = None
@@ -523,6 +524,7 @@ async def process_video(body: VideoProcessRequest, orchestrator=Depends(get_orch
         "format": body.format or [],
         "style": body.style or "minimal",
         "extras": body.extras,
+        "note_format": body.note_format,
         "video_understanding": body.video_understanding,
         "video_interval": body.video_interval,
         "grid_size": body.grid_size or [],

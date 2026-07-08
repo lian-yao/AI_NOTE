@@ -22,7 +22,9 @@ class EmbeddingClient:
             base = base_url.rstrip("/")
             self.base_url = base if base.endswith("/embeddings") else f"{base}/embeddings"
         else:
-            self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+             # 默认使用 DashScope OpenAI 兼容模式，与前端 provider 配置保持一致
+             self.base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+             self.openai_compatible = True
 
     @staticmethod
     def _load_embedding_model() -> str | None:
