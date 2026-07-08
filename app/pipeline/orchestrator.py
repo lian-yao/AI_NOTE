@@ -31,6 +31,7 @@ from app.qa import QAEngine
 
 from app.transcriber.bjian import BjianTranscriber
 from app.store.vector import VectorStore
+from app.note.timeline import timestamp_from_seconds
 
 
 class PipelineStage(str, Enum):
@@ -55,6 +56,22 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+def _format_transcript_for_note(transcript_data: dict[str, Any] | None, fallback_text: str) -> str:
+    segments = transcript_data.get("segments", []) if transcript_data else []
+    if not segments:
+        return fallback_text
+
+    lines: list[str] = []
+    for segment in segments:
+        start = timestamp_from_seconds(segment.get("start", 0))
+        end = timestamp_from_seconds(segment.get("end", 0))
+        text = str(segment.get("text", "")).strip()
+        if text:
+            lines.append(f"[{start} - {end}] {text}")
+
+    return "\n".join(lines) or fallback_text
 
 
 @dataclass
@@ -522,8 +539,10 @@ class PipelineOrchestrator:
             transcript_text = task.options.get("transcript_text", "")
             if not transcript_text:
                 transcript_text = "这是模拟转录文本。"
-
-            # 从数据库获取视频元信息
+            transcript_for_note = _format_transcript_for_note(
+                task.options.get("transcript_data"),
+                transcript_text,
+            )
             video_meta = {
                 "title": task.video_id or "未命名视频",
                 "uploader": "",
@@ -544,7 +563,7 @@ class PipelineOrchestrator:
             task_llm = self._resolve_task_llm(task, db)
             note_gen = NoteGenerator(llm=task_llm)
             note_result = await note_gen.generate(
-                transcript_text,
+                transcript_for_note,
                 video_meta,
                 style=note_style,
                 extras=note_extras,

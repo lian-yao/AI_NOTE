@@ -19,7 +19,7 @@ import { toast } from 'react-hot-toast'
 import { useChatStore } from '@/store/chatStore'
 import { useTaskStore } from '@/store/taskStore'
 import {
-  askQuestion, askQuestionStream,
+  askQuestion,
   getChatStatus,
   indexTask,
   type ChatSource,
@@ -98,7 +98,6 @@ export default function ChatPanel({
     [rawMessages]
   )
   const addMessage = useChatStore(state => state.addMessage)
-  const updateLastMessage = useChatStore(state => state.updateLastMessage)
   const clearChat = useChatStore(state => state.clearChat)
 
   const tasks = useTaskStore(state => state.tasks)
@@ -154,7 +153,7 @@ export default function ChatPanel({
       addMessage(taskId, { role: 'user', content: question })
       setInput('')
       setLoading(true)
-      let history = messages.map(m => ({ role: m.role, content: m.content }))
+      const history = messages.map(m => ({ role: m.role, content: m.content }))
 
       try {
         const res = await askQuestion({

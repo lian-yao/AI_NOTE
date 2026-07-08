@@ -1,6 +1,7 @@
 """任务管理 API：状态查询、日志、重试。"""
 import json
 from pathlib import Path
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
@@ -8,8 +9,30 @@ from app.core.database import get_db
 from app.core.paths import project_root
 from app.models.task import Task as TaskModel
 from app.models.task_log import TaskLog
+from app.note.timeline import (
+    build_timeline_sections_from_segments,
+    extract_timeline_sections,
+    timeline_sections_have_ranges,
+)
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+def _has_local_video_file(video) -> bool:
+    video_path = getattr(video, "video_path", None)
+    if not video_path:
+        return False
+    path = Path(video_path)
+    if not path.is_absolute():
+        path = Path(project_root()) / path
+    return path.is_file()
+
+
+def _snapshot_url(video, seconds: int | float | None) -> str:
+    video_id = getattr(video, "video_id", "")
+    if not video_id or not _has_local_video_file(video):
+        return ""
+    return f"/api/v1/videos/{quote(video_id, safe='')}/snapshot?time={max(0, int(seconds or 0))}"
 
 
 def _read_note_markdown(db: Session, video_id: int | None) -> str:
@@ -54,7 +77,65 @@ def _read_transcript(video) -> dict:
     return {"full_text": "", "language": "zh-CN", "raw": None, "segments": []}
 
 
-def _audio_meta(video) -> dict:
+def _with_snapshot_urls(video, sections: list[dict]) -> list[dict]:
+    for section in sections:
+        if not section.get("screenshot_url"):
+            section["screenshot_url"] = _snapshot_url(video, section.get("start_time"))
+    return sections
+
+
+def _read_timeline_sections(
+    db: Session,
+    video,
+    markdown: str,
+    transcript: dict | None = None,
+) -> list[dict]:
+    sections = extract_timeline_sections(markdown)
+    if sections and timeline_sections_have_ranges(sections):
+        return _with_snapshot_urls(video, sections)
+
+    video_id = getattr(video, "id", None)
+    if not video_id:
+        return _with_snapshot_urls(
+            video,
+            build_timeline_sections_from_segments((transcript or {}).get("segments", []), sections),
+        )
+
+    from app.models.chunk import Chunk
+
+    chunks = (
+        db.query(Chunk)
+        .filter(Chunk.video_id == video_id)
+        .order_by(Chunk.chunk_index.asc(), Chunk.id.asc())
+        .all()
+    )
+    items = []
+    for index, chunk in enumerate(chunks):
+        item = {
+            "title": chunk.section_title or f"片段 {index + 1}",
+            "start_time": chunk.start_time or 0,
+            "end_time": chunk.end_time or 0,
+            "content": chunk.content,
+            "chunk_index": chunk.chunk_index,
+        }
+        snapshot_url = _snapshot_url(video, chunk.start_time)
+        if snapshot_url:
+            item["screenshot_url"] = snapshot_url
+        items.append(item)
+    if timeline_sections_have_ranges(items):
+        return _with_snapshot_urls(video, items)
+
+    transcript_sections = build_timeline_sections_from_segments(
+        (transcript or {}).get("segments", []),
+        items or sections,
+    )
+    if transcript_sections:
+        return _with_snapshot_urls(video, transcript_sections)
+
+    return _with_snapshot_urls(video, items or sections)
+
+
+def _audio_meta(video, chapters: list[dict] | None = None) -> dict:
     return {
         "cover_url": video.cover_url or "",
         "duration": video.duration_seconds or 0,
@@ -73,7 +154,7 @@ def _audio_meta(video) -> dict:
             f"https://player.bilibili.com/player.html?bvid={video.bvid}&page=1&high_quality=1&autoplay=0"
             if video.bvid else None
         ),
-        "chapters": [],
+        "chapters": chapters or [],
     }
 
 
@@ -83,10 +164,12 @@ def _task_result(db: Session, video) -> dict | None:
     markdown = _read_note_markdown(db, video.id)
     if not markdown:
         return None
+    transcript = _read_transcript(video)
+    chapters = _read_timeline_sections(db, video, markdown, transcript)
     return {
         "markdown": markdown,
-        "transcript": _read_transcript(video),
-        "audio_meta": _audio_meta(video),
+        "transcript": transcript,
+        "audio_meta": _audio_meta(video, chapters),
     }
 
 

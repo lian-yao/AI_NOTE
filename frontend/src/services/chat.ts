@@ -47,6 +47,17 @@ interface QAResponse {
   sources?: Array<ChatSource | SearchResultSource>
 }
 
+type StreamSource = Partial<ChatSource> & {
+  start_time?: number | null
+  end_time?: number | null
+}
+
+interface StreamEvent {
+  token?: string
+  sources?: StreamSource[]
+  done?: boolean
+}
+
 function referenceToSource(reference: Reference): ChatSource {
   return {
     text: reference.content,
@@ -132,12 +143,12 @@ export const askQuestionStream = async (
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue
         try {
-          const parsed = JSON.parse(line.slice(6))
+          const parsed = JSON.parse(line.slice(6)) as StreamEvent
           if (parsed.token) {
             onToken(parsed.token)
           }
-          if (parsed.sources) {
-            onSources(parsed.sources.map((s: any) => ({
+          if (Array.isArray(parsed.sources)) {
+            onSources(parsed.sources.map(s => ({
               text: s.text || '',
               source_type: s.start_time != null ? 'transcript' as const : 'markdown' as const,
               section_title: s.section_title,

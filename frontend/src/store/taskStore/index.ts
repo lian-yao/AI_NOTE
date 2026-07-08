@@ -35,6 +35,11 @@ export interface AudioMeta {
     title?: string
     start_time?: number
     end_time?: number
+    content?: string
+    chunk_index?: number
+    screenshot_url?: string
+    image_url?: string
+    thumbnail_url?: string
   }>
 }
 
@@ -102,7 +107,7 @@ function storageSafeKey(value: string): string {
 
 const apiBaseURL = getApiBaseURL()
 // 统一存储 key：只取路径部分，去掉 host:port，确保手动启动和脚本启动 key 一致
-const storageKeyURL = apiBaseURL.replace(/^https?:\/\/[^\/]+/, '')
+const storageKeyURL = apiBaseURL.replace(/^https?:\/\/[^/]+/, '')
 const explicitBackendMode = String(import.meta.env.VITE_BACKEND_MODE || '').toLowerCase()
 export const isMockBackend =
   explicitBackendMode === 'mock' ||
