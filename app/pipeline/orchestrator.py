@@ -434,7 +434,8 @@ class PipelineOrchestrator:
 
             def on_dl_progress(pct: float):
                 self._sync_progress(task, stage, int(pct))
-
+            quality = task.options.get("quality", "1080p")
+            logger.info(f"download: [{task.task_id}] quality={quality}")
             dl_result = await self.video_processor.download(video_dir, quality=task.options.get("quality", "1080p"), progress_cb=on_dl_progress)
             if not dl_result.success:
                 raise RuntimeError(dl_result.error)
@@ -467,7 +468,15 @@ class PipelineOrchestrator:
                 self._sync_progress(task, stage, 30 + int(pct * 0.7))
 
             transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
-            logger.info(f"transcriber: {self.transcriber.__class__.__name__}")
+            _tc = self.transcriber
+            if hasattr(_tc, 'model_size'):
+                logger.info(f"transcriber: {_tc.__class__.__name__} model={_tc.model_size} device={_tc.device} compute={getattr(_tc, 'compute_type', '?')}")
+            elif hasattr(_tc, '_local') and hasattr(_tc._local, 'model_size'):
+                logger.info(f"transcriber: {_tc.__class__.__name__}({_tc._local.__class__.__name__}) model={_tc._local.model_size} device={_tc._local.device}")
+            elif hasattr(_tc, 'local') and hasattr(_tc.local, 'model_size'):
+                logger.info(f"transcriber: {_tc.__class__.__name__}({_tc.local.__class__.__name__}) model={_tc.local.model_size} device={_tc.local.device}")
+            else:
+                logger.info(f"transcriber: {_tc.__class__.__name__}")
             if not transcribe_result.success:
                 raise RuntimeError(transcribe_result.error or "语音转写失败，未返回错误详情")
 
@@ -579,6 +588,8 @@ class PipelineOrchestrator:
 
         elif stage == PipelineStage.STORE:
             self._sync_progress(task, stage, 10)
+            from app.core.config import settings
+            logger.info(f"embedding: model={settings.embedding_model}")
             if task.note_id and self.vector_store:
                 db_note = db.query(Note).filter(Note.id == task.note_id).first()
                 if db_note and db_note.file_path:
