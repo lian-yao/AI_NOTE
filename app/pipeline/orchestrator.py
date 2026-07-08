@@ -32,6 +32,7 @@ from app.qa import QAEngine
 
 from app.transcriber.bjian import BjianTranscriber
 from app.store.vector import VectorStore
+from app.llm.mock import MockLLM
 from app.note.timeline import timestamp_from_seconds
 
 
@@ -175,9 +176,15 @@ class PipelineOrchestrator:
         else:
             from app.core.config import settings
             if not settings.tongyi_api_key and not settings.deepseek_api_key:
-                raise RuntimeError("????? LLM API Key?VN_TONGYI_API_KEY / VN_DEEPSEEK_API_KEY?")
-            from app.llm.client import get_llm_client
-            self.llm = get_llm_client()
+                logger.warning("未配置全局 LLM API Key，流水线默认 LLM 将使用 MockLLM")
+                self.llm = MockLLM()
+            else:
+                from app.llm.client import get_llm_client
+                try:
+                    self.llm = get_llm_client()
+                except Exception as exc:
+                    logger.warning(f"全局 LLM 初始化失败，流水线默认 LLM 将使用 MockLLM: {exc}")
+                    self.llm = MockLLM()
 
         # ?? Transcriber: ??????????????? Faster-Whisper ??
         if transcriber:
@@ -431,8 +438,23 @@ class PipelineOrchestrator:
                 pass
             except asyncio.CancelledError:
                 task.status = TaskStatus.CANCELLED
-                task.error = "任务被中断，可能是后端重载或进程退出"
                 db.rollback()
+                if task.cancelled:
+                    task.error = "已被用户取消"
+                    try:
+                        if task.video_id:
+                            video = db.query(Video).filter(Video.video_id == task.video_id).first()
+                            if video:
+                                video.status = "cancelled"
+                        if task.current_stage:
+                            self._sync_task_model(task, task.current_stage, "cancelled", db)
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                    self._emit(PipelineEvent(event="error", task_id=task.task_id, video_id=task.video_id or "", stage=task.current_stage.value if task.current_stage else "", status="failed", progress=task.progress, message=task.error))
+                    return
+
+                task.error = "任务被中断，可能是后端重载或进程退出"
                 try:
                     if task.current_stage:
                         self._sync_task_model(task, task.current_stage, "failed", db)
@@ -575,40 +597,75 @@ class PipelineOrchestrator:
             if not video_dir:
                 video_dir = str(project_path("data", "videos", task.video_id))
 
-            # 本地音频文件：DOWNLOAD 阶段已转换为 audio.wav，直接使用
+            from app.processor.subtitles import (
+                fetch_subtitle_transcript,
+                is_subtitle_transcript_source,
+                load_cached_transcript,
+            )
+
+            audio_path = ""
+            transcribe_result = None
             is_local = self._is_local_source(task)
             local_path = task.options.get("local_file_path", "")
             suffix = Path(local_path).suffix.lower() if local_path else ""
-            is_local_audio = is_local and suffix in {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".wma"}
+            is_local_audio = is_local and suffix in {
+                ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".wma"
+            }
             prebuilt_audio = str(Path(video_dir) / "audio.wav")
+            cached_transcript = load_cached_transcript(video_dir)
+            cached_source = (
+                cached_transcript.metadata.get("source")
+                if cached_transcript and cached_transcript.metadata
+                else ""
+            )
 
-            if is_local_audio and Path(prebuilt_audio).is_file():
-                audio_path = prebuilt_audio
-                self._sync_progress(task, stage, 30)
-            else:
-                def on_audio_progress(pct: float):
-                    self._sync_progress(task, stage, int(pct * 0.3))
+            if cached_transcript and (
+                is_local or is_subtitle_transcript_source(str(cached_source))
+            ):
+                transcribe_result = cached_transcript
+                self._sync_progress(task, stage, 100)
+                logger.info(f"transcript cache reused: source={cached_source}")
+            elif not is_local:
+                self._sync_progress(task, stage, 8)
+                subtitle_result = await fetch_subtitle_transcript(task.source_url, video_dir)
+                if subtitle_result and subtitle_result.success:
+                    transcribe_result = subtitle_result
+                    self._sync_progress(task, stage, 100)
+                elif cached_transcript:
+                    transcribe_result = cached_transcript
+                    self._sync_progress(task, stage, 100)
+                    logger.info(f"transcript cache reused after subtitle miss: source={cached_source or 'cached'}")
 
-                audio_result = await self.video_processor.extract_audio(video_dir, on_audio_progress)
-                if not audio_result.success:
-                    raise RuntimeError(audio_result.error or "音频提取失败，未返回错误详情")
+            if transcribe_result is None:
+                if is_local_audio and Path(prebuilt_audio).is_file():
+                    audio_path = prebuilt_audio
+                    self._sync_progress(task, stage, 30)
+                else:
+                    # 先提取音频
+                    def on_audio_progress(pct: float):
+                        self._sync_progress(task, stage, int(pct * 0.3))
 
-                audio_path = audio_result.artifacts.get("audio_path", "")
+                    audio_result = await self.video_processor.extract_audio(video_dir, on_audio_progress)
+                    if not audio_result.success:
+                        raise RuntimeError(audio_result.error or "音频提取失败，未返回错误详情")
 
-            # 再转写
-            def on_transcribe_progress(pct: float):
-                self._sync_progress(task, stage, 30 + int(pct * 0.7))
+                    audio_path = audio_result.artifacts.get("audio_path", "")
 
-            transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
-            _tc = self.transcriber
-            if hasattr(_tc, 'model_size'):
-                logger.info(f"transcriber: {_tc.__class__.__name__} model={_tc.model_size} device={_tc.device} compute={getattr(_tc, 'compute_type', '?')}")
-            elif hasattr(_tc, '_local') and hasattr(_tc._local, 'model_size'):
-                logger.info(f"transcriber: {_tc.__class__.__name__}({_tc._local.__class__.__name__}) model={_tc._local.model_size} device={_tc._local.device}")
-            elif hasattr(_tc, 'local') and hasattr(_tc.local, 'model_size'):
-                logger.info(f"transcriber: {_tc.__class__.__name__}({_tc.local.__class__.__name__}) model={_tc.local.model_size} device={_tc.local.device}")
-            else:
-                logger.info(f"transcriber: {_tc.__class__.__name__}")
+                # 再转写
+                def on_transcribe_progress(pct: float):
+                    self._sync_progress(task, stage, 30 + int(pct * 0.7))
+
+                transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
+                _tc = self.transcriber
+                if hasattr(_tc, 'model_size'):
+                    logger.info(f"transcriber: {_tc.__class__.__name__} model={_tc.model_size} device={_tc.device} compute={getattr(_tc, 'compute_type', '?')}")
+                elif hasattr(_tc, '_local') and hasattr(_tc._local, 'model_size'):
+                    logger.info(f"transcriber: {_tc.__class__.__name__}({_tc._local.__class__.__name__}) model={_tc._local.model_size} device={_tc._local.device}")
+                elif hasattr(_tc, 'local') and hasattr(_tc.local, 'model_size'):
+                    logger.info(f"transcriber: {_tc.__class__.__name__}({_tc.local.__class__.__name__}) model={_tc.local.model_size} device={_tc.local.device}")
+                else:
+                    logger.info(f"transcriber: {_tc.__class__.__name__}")
+
             if not transcribe_result.success:
                 raise RuntimeError(transcribe_result.error or "语音转写失败，未返回错误详情")
 
@@ -649,7 +706,8 @@ class PipelineOrchestrator:
             if task.video_id:
                 video = db.query(Video).filter(Video.video_id == task.video_id).first()
                 if video:
-                    video.audio_path = str(audio_path)
+                    if audio_path:
+                        video.audio_path = str(audio_path)
                     video.status = "transcribed"
                     db.flush()
 
@@ -722,9 +780,13 @@ class PipelineOrchestrator:
 
         elif stage == PipelineStage.STORE:
             self._sync_progress(task, stage, 10)
-            from app.core.config import settings
-            logger.info(f"embedding: model={settings.embedding_model}")
-            if task.note_id and self.vector_store:
+            from app.core.model_usage import load_model_usage_config
+            from app.store.chunker import semantic_chunk
+            from app.store.embedder import EmbeddingClient, EmbeddingConfigurationError
+            embedding_usage = load_model_usage_config()
+            embedding_model = embedding_usage.get("embedding_model_name") or EmbeddingClient().model
+            logger.info(f"embedding: model={embedding_model}")
+            if task.note_id:
                 db_note = db.query(Note).filter(Note.id == task.note_id).first()
                 if db_note and db_note.file_path:
                     note_path = Path(db_note.file_path)
@@ -736,17 +798,69 @@ class PipelineOrchestrator:
                             if v:
                                 video_title = v.title
                         self._sync_progress(task, stage, 40)
-                        try:
-                            chunk_count = await self.vector_store.store_note(
-                                task.video_id or task.task_id,
-                                note_content,
-                                video_title,
-                            )
-                            db_note.total_chunks = chunk_count or 0
-                            db.flush()
-                        except Exception as e:
-                            task.error = f"向量索引失败: {e}"
-                            raise RuntimeError(f"向量索引失败: {e}")
+                        video_key = task.video_id or task.task_id
+                        chunks = semantic_chunk(note_content)
+                        db.query(Chunk).filter(Chunk.note_id == db_note.id).delete()
+                        keyword_items = []
+                        for idx, chunk in enumerate(chunks):
+                            chunk_id = f"{video_key}_{idx}"
+                            content = chunk.get("content", "")
+                            db.add(Chunk(
+                                chunk_id=chunk_id,
+                                video_id=db_note.video_id,
+                                note_id=db_note.id,
+                                chunk_index=idx,
+                                section_title=chunk.get("title"),
+                                content=content,
+                                start_time=chunk.get("start_time", 0),
+                                end_time=chunk.get("end_time", 0),
+                                chroma_id=chunk_id,
+                                token_count=len(content),
+                            ))
+                            keyword_items.append({
+                                "id": chunk_id,
+                                "document": content,
+                                "metadata": {
+                                    "video_id": video_key,
+                                    "video_title": video_title,
+                                    "section_title": chunk.get("title"),
+                                    "chunk_index": idx,
+                                    "start_time": chunk.get("start_time", 0),
+                                    "end_time": chunk.get("end_time", 0),
+                                },
+                            })
+                        db_note.total_chunks = len(chunks)
+                        db.flush()
+                        if keyword_items and hasattr(self.retriever, "build_keyword_index"):
+                            self.retriever.build_keyword_index(keyword_items)
+
+                        if self.vector_store:
+                            try:
+                                await self.vector_store.delete_vectors(video_key)
+                            except Exception as exc:
+                                logger.warning(f"清理旧向量失败，将继续重建索引: {exc}")
+                            try:
+                                chunk_count = await self.vector_store.store_note(
+                                    video_key,
+                                    note_content,
+                                    video_title,
+                                )
+                                db_note.total_chunks = max(db_note.total_chunks, chunk_count or 0)
+                                db.flush()
+                            except EmbeddingConfigurationError as e:
+                                logger.warning(f"Embedding 未配置，已跳过向量索引: {e}")
+                                self._emit(PipelineEvent(
+                                    event="progress",
+                                    task_id=task.task_id,
+                                    video_id=task.video_id or "",
+                                    stage=stage.value,
+                                    status="running",
+                                    progress=task.progress,
+                                    message=f"跳过向量索引：{e}",
+                                ))
+                            except Exception as e:
+                                task.error = f"向量索引失败: {e}"
+                                raise RuntimeError(f"向量索引失败: {e}")
                     else:
                         task.error = f"笔记文件不存在: {note_path}"
                         raise RuntimeError(f"笔记文件不存在: {note_path}")
@@ -779,8 +893,8 @@ class PipelineOrchestrator:
                 return
             tid = f"{task.task_id}_{stage.value}"
             t = db.query(TaskModel).filter(TaskModel.task_id == tid, TaskModel.type == stage.value).first()
-            progress = task.progress if status == "running" else 100
-            error_message = task.error if status == "failed" else None
+            progress = task.progress if status in ("running", "cancelled") else 100
+            error_message = task.error if status in ("failed", "cancelled") else None
             if not t:
                 t = TaskModel(
                     task_id=tid,
@@ -793,7 +907,7 @@ class PipelineOrchestrator:
                 db.add(t)
                 if status == "running":
                     t.started_at = datetime.utcnow()
-                elif status == "completed":
+                elif status in ("completed", "cancelled", "failed"):
                     t.completed_at = datetime.utcnow()
             else:
                 t.status = status
@@ -804,6 +918,10 @@ class PipelineOrchestrator:
                     t.completed_at = datetime.utcnow()
                 elif status == "failed":
                     t.error_message = error_message
+                    t.completed_at = datetime.utcnow()
+                elif status == "cancelled":
+                    t.error_message = error_message
+                    t.completed_at = datetime.utcnow()
             db.flush()
         except Exception as e:
             logger.error(f"同步任务模型失败 ({task.task_id}_{stage.value}): {e}")

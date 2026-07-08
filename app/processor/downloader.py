@@ -55,6 +55,23 @@ async def download_video(
 
     output_template = str(video_dir_path / "%(title)s.%(ext)s")
     media_extensions = {".mp4", ".m4v", ".mkv", ".webm", ".mov"}
+    existing_media = [
+        path for path in video_dir_path.iterdir()
+        if path.is_file() and path.suffix.lower() in media_extensions
+    ]
+    if existing_media:
+        video_path = str(max(existing_media, key=lambda path: path.stat().st_size))
+        if progress_cb:
+            progress_cb(100.0)
+        return StageResult(
+            success=True,
+            artifacts={"video_path": video_path},
+            metadata={
+                "quality": quality,
+                "file_size": os.path.getsize(video_path),
+                "reused": True,
+            },
+        )
 
     # 进度追踪
     last_pct = 0

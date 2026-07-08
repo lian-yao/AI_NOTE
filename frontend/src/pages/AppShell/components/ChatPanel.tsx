@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import {
   Loader2,
   Trash2,
@@ -16,10 +15,11 @@ import {
   SendHorizontal,
 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
+import { cn } from '@/lib/utils'
 import { useChatStore } from '@/store/chatStore'
 import { useTaskStore } from '@/store/taskStore'
 import {
-  askQuestion,
+  askQuestionStream,
   getChatStatus,
   indexTask,
   type ChatSource,
@@ -37,34 +37,115 @@ interface ChatPanelProps {
   showModeToggle?: boolean
 }
 
-function SourceBadges({ sources }: { sources: ChatSource[] }) {
+const assistantMarkdownClassName = cn(
+  'max-w-none break-words leading-6 text-neutral-200',
+  '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
+  '[&_p]:my-1 [&_li]:my-0.5 [&_ol]:pl-5 [&_ul]:pl-5',
+  '[&_hr]:my-3 [&_hr]:border-neutral-800',
+  '[&_blockquote]:my-2 [&_blockquote]:border [&_blockquote]:border-blue-400/15 [&_blockquote]:border-l-blue-400/55',
+  '[&_blockquote]:bg-blue-500/10 [&_blockquote]:px-3 [&_blockquote]:py-2 [&_blockquote]:text-neutral-200',
+  '[&_blockquote]:shadow-[inset_3px_0_0_rgba(96,165,250,0.45)]',
+  '[&_blockquote_p]:my-0.5 [&_blockquote_p]:text-neutral-200',
+)
+
+function stripInlineReferenceSection(content: string) {
+  const markerIndex = content.search(
+    /\n{0,2}---\s*\n\s*(?:\*\*)?\s*引用来源\s*(?:\*\*)?\s*[：:]/,
+  )
+  return markerIndex >= 0 ? content.slice(0, markerIndex).trimEnd() : content
+}
+
+function formatSourceTime(seconds?: number) {
+  if (typeof seconds !== 'number' || Number.isNaN(seconds)) return ''
+
+  const totalSeconds = Math.max(0, Math.floor(seconds))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const secs = totalSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+  }
+  return `${minutes}:${String(secs).padStart(2, '0')}`
+}
+
+function getSourceTitle(source: ChatSource, index: number) {
+  const sectionTitle = source.section_title?.trim()
+  if (sectionTitle) return sectionTitle
+  return source.source_type === 'transcript' ? `字幕片段 ${index + 1}` : `笔记片段 ${index + 1}`
+}
+
+function getSourceTimeRange(source: ChatSource) {
+  const start = formatSourceTime(source.start_time)
+  const end = formatSourceTime(source.end_time)
+
+  if (start && end && start !== end) return `${start} - ${end}`
+  return start || end
+}
+
+function SourceText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const content = text.trim() || '没有返回引用文本'
+  const shouldClamp = content.length > 160 || content.includes('\n')
+
+  return (
+    <div>
+      <p
+        className={cn(
+          'whitespace-pre-wrap break-words text-xs leading-5 text-neutral-300',
+          shouldClamp && !expanded && 'max-h-[3.75rem] overflow-hidden',
+        )}
+      >
+        {content}
+      </p>
+      {shouldClamp && (
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="mt-1 text-xs text-neutral-500 transition-colors hover:text-neutral-300"
+        >
+          {expanded ? '收起原文' : '展开原文'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function SourceReferences({ sources }: { sources: ChatSource[] }) {
   const [expanded, setExpanded] = useState(false)
 
   if (!sources || sources.length === 0) return null
 
   return (
-    <div className="mt-1.5">
+    <div className="mt-3 border-t border-neutral-800/80 pt-2">
       <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 text-xs text-neutral-500 transition-colors hover:text-neutral-300"
+        className="flex items-center gap-1.5 text-xs text-neutral-500 transition-colors hover:text-neutral-300"
       >
         <BookOpen className="h-3 w-3" />
         <span>引用来源 ({sources.length})</span>
         {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
       </button>
       {expanded && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {sources.map((s, i) => (
-            <Badge
-              key={i}
-              variant="outline"
-              className="border-neutral-700 bg-neutral-900/60 text-xs font-normal text-neutral-300"
-            >
-              {s.source_type === 'markdown'
-                ? s.section_title || '笔记'
-                : `${(s.start_time ?? 0).toFixed(0)}s ~ ${(s.end_time ?? 0).toFixed(0)}s`}
-            </Badge>
-          ))}
+        <div className="mt-2 space-y-2">
+          {sources.map((s, i) => {
+            const timeRange = getSourceTimeRange(s)
+
+            return (
+              <div key={i} className="rounded-md border border-neutral-800/80 px-2.5 py-2">
+                <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-xs font-medium text-neutral-300">
+                    {i + 1}. {getSourceTitle(s, i)}
+                  </span>
+                  {timeRange && (
+                    <span className="shrink-0 text-[11px] text-neutral-500">{timeRange}</span>
+                  )}
+                </div>
+                <SourceText text={s.text || ''} />
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
@@ -82,6 +163,10 @@ export default function ChatPanel({
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null)
+  const [streamingAssistant, setStreamingAssistant] = useState<{
+    content: string
+    sources: ChatSource[]
+  } | null>(null)
 
   const rawMessages = useChatStore(state => state.chatHistory?.[taskId])
   const messages = useMemo(
@@ -91,12 +176,28 @@ export default function ChatPanel({
             .filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant'))
             .map(msg => ({
               ...msg,
-              content: typeof msg.content === 'string' ? msg.content : String(msg.content ?? ''),
+              content: stripInlineReferenceSection(
+                typeof msg.content === 'string' ? msg.content : String(msg.content ?? ''),
+              ),
               sources: Array.isArray(msg.sources) ? msg.sources : undefined,
             }))
         : [],
     [rawMessages]
   )
+  const renderedMessages = useMemo(() => {
+    if (!streamingAssistant || (!streamingAssistant.content && streamingAssistant.sources.length === 0)) {
+      return messages
+    }
+
+    return [
+      ...messages,
+      {
+        role: 'assistant' as const,
+        content: streamingAssistant.content,
+        sources: streamingAssistant.sources,
+      },
+    ]
+  }, [messages, streamingAssistant])
   const addMessage = useChatStore(state => state.addMessage)
   const clearChat = useChatStore(state => state.clearChat)
 
@@ -153,26 +254,51 @@ export default function ChatPanel({
       addMessage(taskId, { role: 'user', content: question })
       setInput('')
       setLoading(true)
+      setStreamingAssistant({ content: '', sources: [] })
       const history = messages.map(m => ({ role: m.role, content: m.content }))
 
       try {
-        const res = await askQuestion({
-          task_id: taskId,
-          video_id: videoId,
-          question,
-          history,
-          provider_id: providerId,
-          model_name: modelName,
-        })
+        let answer = ''
+        let sources: ChatSource[] = []
+
+        await askQuestionStream(
+          {
+            task_id: taskId,
+            video_id: videoId,
+            question,
+            history,
+            provider_id: providerId,
+            model_name: modelName,
+          },
+          token => {
+            answer += token
+            const cleanedAnswer = stripInlineReferenceSection(answer)
+            setStreamingAssistant(prev => ({
+              content: cleanedAnswer,
+              sources: prev?.sources ?? sources,
+            }))
+          },
+          nextSources => {
+            sources = nextSources
+            setStreamingAssistant(prev => ({
+              content: prev?.content ?? stripInlineReferenceSection(answer),
+              sources,
+            }))
+          },
+          () => undefined,
+        )
+
+        const cleanedAnswer = stripInlineReferenceSection(answer)
         addMessage(taskId, {
           role: 'assistant',
-          content: res.answer,
-          sources: res.sources,
+          content: cleanedAnswer.trim() ? cleanedAnswer : '未生成回答',
+          sources,
         })
       } catch {
         toast.error('问答请求失败')
       } finally {
         setLoading(false)
+        setStreamingAssistant(null)
       }
     },
     [loading, taskId, currentTask, videoId, messages, addMessage]
@@ -185,7 +311,7 @@ export default function ChatPanel({
         <div className="text-center">
           <p className="text-sm font-medium text-neutral-200">正在索引笔记内容...</p>
           <p className="mt-1 text-xs text-neutral-500">
-            首次使用需下载 Embedding 模型（约 80MB），请耐心等待
+            使用设置中的 Embedding 配置；未配置 API Key 时会自动降级为关键词检索。
           </p>
         </div>
       </div>
@@ -256,7 +382,7 @@ export default function ChatPanel({
 
       {/* 消息列表 */}
       <div className="custom-scrollbar flex-1 overflow-y-auto bg-[#151515] p-4">
-        {messages.length === 0 && !loading ? (
+        {renderedMessages.length === 0 && !loading ? (
           <div className="flex h-full items-center justify-center text-center text-sm text-neutral-400">
             <div>
               <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-neutral-800 bg-[#1D1D1F]">
@@ -268,7 +394,7 @@ export default function ChatPanel({
           </div>
         ) : (
           <div className="space-y-3">
-            {messages.map((msg, index) => {
+            {renderedMessages.map((msg, index) => {
               const isUser = msg.role === 'user'
               return (
                 <div
@@ -281,21 +407,22 @@ export default function ChatPanel({
                     </div>
                   )}
                   <div
-                    className={`max-w-[82%] rounded-xl px-3 py-2 text-sm ${
+                    className={cn(
+                      'min-w-0 text-sm',
                       isUser
-                        ? 'bg-primary text-white'
-                        : 'border border-neutral-800 bg-[#202024] text-neutral-200 shadow-sm'
-                    }`}
+                        ? 'bg-primary max-w-[78%] rounded-lg px-3 py-2 text-white'
+                        : 'flex-1 py-1 text-neutral-200',
+                    )}
                   >
                     {isUser ? (
                       <p className="break-words whitespace-pre-wrap">{msg.content}</p>
                     ) : (
-                      <div className="markdown-body prose prose-sm prose-invert prose-headings:my-2 prose-p:my-1 prose-li:my-0.5 max-w-none">
+                      <div className={assistantMarkdownClassName}>
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                       </div>
                     )}
                     {msg.role === 'assistant' && Array.isArray(msg.sources) && (
-                      <SourceBadges sources={msg.sources} />
+                      <SourceReferences sources={msg.sources} />
                     )}
                   </div>
                   {isUser && (
@@ -306,7 +433,7 @@ export default function ChatPanel({
                 </div>
               )
             })}
-            {loading && (
+            {loading && !streamingAssistant?.content && (
               <div className="flex items-center gap-2 text-sm text-neutral-400">
                 <Loader2 className="text-primary h-4 w-4 animate-spin" />
                 思考中...

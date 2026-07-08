@@ -327,6 +327,7 @@ class FasterWhisperTranscriber:
             "duration_seconds": sum(s["end"] - s["start"] for s in segments),
             "segments": segments,
             "full_text": full_text,
+            "source": f"whisper:{self.model_size}",
         }
         json_path = video_dir_path / "transcription.json"
         json_path.write_text(
@@ -350,6 +351,7 @@ class FasterWhisperTranscriber:
                 "segment_count": len(segments),
                 "duration_seconds": sum(s["end"] - s["start"] for s in segments),
                 "model_size": self.model_size,
+                "source": f"whisper:{self.model_size}",
             },
         )
 

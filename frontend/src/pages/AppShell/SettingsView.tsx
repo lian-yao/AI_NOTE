@@ -66,13 +66,21 @@ import {
   type GPUInfo,
   type GPUInstallProgress,
 } from '@/services/transcriber'
-import { getDeployStatus, getSystemStats, type DeployStatus, type SystemStats } from '@/services/system'
+import {
+  getDeployStatus,
+  getModelUsageConfig,
+  getSystemStats,
+  updateModelUsageConfig,
+  type DeployStatus,
+  type ModelUsageConfig,
+  type SystemStats,
+} from '@/services/system'
 import { isSkippedApiResult } from '@/services/fallback'
 import { IconSwitch } from './components/IconSwitch'
 import BackendInitDialog from '@/components/BackendInitDialog'
 
 type ProviderDraft = Omit<IProvider, 'id'> & { id?: string }
-type SettingsSectionId = 'provider' | 'platform' | 'transcriber' | 'storage' | 'monitor'
+type SettingsSectionId = 'configuration' | 'provider' | 'platform' | 'transcriber' | 'storage' | 'monitor'
 
 const SETTINGS_SECTIONS: {
   id: SettingsSectionId
@@ -80,6 +88,7 @@ const SETTINGS_SECTIONS: {
   detail: string
   icon: ComponentType<{ size?: number; className?: string }>
 }[] = [
+  { id: 'configuration', label: '配置设置', detail: 'Default Models / Download', icon: Settings2 },
   { id: 'provider', label: '模型接入', detail: 'Provider / API Key / Models', icon: Key },
   { id: 'platform', label: '平台数据', detail: 'Bilibili Cookie / Proxy', icon: Database },
   { id: 'transcriber', label: '本地转写', detail: 'Whisper / Transcriber', icon: HardDrive },
@@ -194,6 +203,16 @@ function providerDraftFromPreset(
   }
 }
 
+const defaultModelUsageConfig: ModelUsageConfig = {
+  qa_provider_id: '',
+  qa_model_name: '',
+  embedding_provider_id: '',
+  embedding_model_name: '',
+  embedding_model: 'text-embedding-v3',
+}
+
+const DOWNLOAD_QUALITY_OPTIONS = ['360p', '480p', '720p', '1080p']
+
 const CACHE_DIRECTORY_META: {
   key: CacheDirectoryKey
   label: string
@@ -306,7 +325,7 @@ export default function SettingsView({
   backendLastError = null,
   onBackendRetry,
 }: SettingsViewProps) {
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>('provider')
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('configuration')
   const activeMeta =
     SETTINGS_SECTIONS.find(section => section.id === activeSection) || SETTINGS_SECTIONS[0]
   const ActiveSectionIcon = activeMeta.icon
@@ -365,6 +384,7 @@ export default function SettingsView({
               onRetry={onBackendRetry}
               placement="inline"
             />
+            {activeSection === 'configuration' && <ConfigurationSection />}
             {activeSection === 'provider' && <ProviderSection />}
             {activeSection === 'platform' && <DownloaderSection />}
             {activeSection === 'transcriber' && <TranscriberSection />}
@@ -374,6 +394,171 @@ export default function SettingsView({
         </div>
       </div>
     </div>
+  )
+}
+
+function ConfigurationSection() {
+  const providers = useProviderStore(state => state.provider)
+  const fetchProviderList = useProviderStore(state => state.fetchProviderList)
+  const [providersLoaded, setProvidersLoaded] = useState(false)
+  const [providersLoadFailed, setProvidersLoadFailed] = useState(false)
+  const [enabledModelsByProvider, setEnabledModelsByProvider] = useState<Record<string, SavedModel[]>>({})
+  const [modelUsageDraft, setModelUsageDraft] = useState<ModelUsageConfig>(defaultModelUsageConfig)
+  const [modelUsageLoaded, setModelUsageLoaded] = useState(false)
+  const [savingModelUsage, setSavingModelUsage] = useState(false)
+  const [qualitySetting, setQualitySetting] = useState(() => localStorage.getItem('download_quality') || '1080p')
+
+  useEffect(() => {
+    let mounted = true
+
+    fetchProviderList({ silent: true })
+      .then(ok => {
+        if (mounted) setProvidersLoadFailed(!ok)
+      })
+      .finally(() => {
+        if (mounted) setProvidersLoaded(true)
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [fetchProviderList])
+
+  useEffect(() => {
+    providers.forEach(provider => {
+      refreshEnabledModels(provider.id)
+    })
+  }, [providers])
+
+  useEffect(() => {
+    let mounted = true
+
+    getModelUsageConfig({ silent: true })
+      .then(config => {
+        if (mounted) {
+          setModelUsageDraft({ ...defaultModelUsageConfig, ...config })
+        }
+      })
+      .catch(() => {
+        if (mounted) setModelUsageDraft(defaultModelUsageConfig)
+      })
+      .finally(() => {
+        if (mounted) setModelUsageLoaded(true)
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  const refreshEnabledModels = async (providerId: string) => {
+    try {
+      const models = await fetchProviderModelRowsById(providerId, { silent: true })
+      setEnabledModelsByProvider(prev => ({
+        ...prev,
+        [providerId]: Array.isArray(models) ? models.map(model => ({
+          id: model.id,
+          model_name: model.model_name,
+          enabled: model.enabled !== false,
+        })) : [],
+      }))
+    } catch {
+      setEnabledModelsByProvider(prev => ({ ...prev, [providerId]: [] }))
+    }
+  }
+
+  const updateModelUsageDraft = (patch: Partial<ModelUsageConfig>) => {
+    setModelUsageDraft(prev => ({ ...prev, ...patch }))
+  }
+
+  const handleSaveModelUsage = async () => {
+    setSavingModelUsage(true)
+    try {
+      const saved = await updateModelUsageConfig(modelUsageDraft)
+      setModelUsageDraft({ ...defaultModelUsageConfig, ...saved })
+      toast.success('默认模型配置已保存')
+    } catch {
+      // 拦截器已提示
+    } finally {
+      setSavingModelUsage(false)
+    }
+  }
+
+  const handleQualityChange = (value: string) => {
+    setQualitySetting(value)
+    localStorage.setItem('download_quality', value)
+    toast.success('下载质量已保存')
+  }
+
+  const enabledUsageModelsLoaded = providersLoaded && providers.every(
+    provider => enabledModelsByProvider[provider.id] !== undefined,
+  )
+  const usageModelOptions = useMemo<UsageModelOption[]>(
+    () =>
+      providers.flatMap(provider =>
+        (enabledModelsByProvider[provider.id] || [])
+          .filter(model => model.enabled !== false)
+          .map(model => ({
+            providerId: provider.id,
+            providerName: provider.name,
+            modelName: model.model_name,
+          })),
+      ),
+    [providers, enabledModelsByProvider],
+  )
+  const chatUsageOptions = useMemo(
+    () => usageModelOptions.filter(option => !isEmbeddingModel(option.modelName)),
+    [usageModelOptions],
+  )
+  const embeddingUsageOptions = useMemo(
+    () => usageModelOptions.filter(option => isEmbeddingModel(option.modelName)),
+    [usageModelOptions],
+  )
+
+  useEffect(() => {
+    if (!modelUsageLoaded || !enabledUsageModelsLoaded) return
+    setModelUsageDraft(prev => {
+      const qaAvailable = hasUsageModelOption(chatUsageOptions, prev.qa_provider_id, prev.qa_model_name)
+      const embeddingAvailable = hasUsageModelOption(
+        embeddingUsageOptions,
+        prev.embedding_provider_id,
+        prev.embedding_model_name,
+      )
+      if (qaAvailable && embeddingAvailable) return prev
+
+      return {
+        ...prev,
+        ...(qaAvailable ? {} : { qa_provider_id: '', qa_model_name: '' }),
+        ...(embeddingAvailable ? {} : { embedding_provider_id: '', embedding_model_name: '' }),
+      }
+    })
+  }, [chatUsageOptions, embeddingUsageOptions, enabledUsageModelsLoaded, modelUsageLoaded])
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <div className="text-lg font-semibold text-neutral-100">配置设置</div>
+        <div className="mt-1 text-sm text-neutral-500">统一设置默认模型、Embedding 与下载清晰度。</div>
+      </div>
+
+      {providersLoadFailed && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+          后端 Provider 配置暂未加载；模型选项恢复后会自动同步。
+        </div>
+      )}
+
+      <ModelUsagePanel
+        config={modelUsageDraft}
+        loaded={modelUsageLoaded}
+        saving={savingModelUsage}
+        chatModels={chatUsageOptions}
+        embeddingModels={embeddingUsageOptions}
+        onChange={updateModelUsageDraft}
+        onSave={handleSaveModelUsage}
+      />
+
+      <DownloadQualityPanel value={qualitySetting} onChange={handleQualityChange} />
+    </section>
   )
 }
 
@@ -875,6 +1060,170 @@ function ProviderSection() {
   )
 }
 
+type UsageModelOption = {
+  providerId: string
+  providerName: string
+  modelName: string
+}
+
+function modelPairValue(providerId?: string, modelName?: string) {
+  return providerId && modelName ? `${providerId}::${modelName}` : ''
+}
+
+function parseModelPair(value: string) {
+  const [providerId = '', ...modelParts] = value.split('::')
+  return {
+    providerId,
+    modelName: modelParts.join('::'),
+  }
+}
+
+function hasUsageModelOption(
+  options: UsageModelOption[],
+  providerId?: string,
+  modelName?: string,
+) {
+  if (!providerId && !modelName) return true
+  if (!providerId || !modelName) return false
+  return options.some(option => option.providerId === providerId && option.modelName === modelName)
+}
+
+function DownloadQualityPanel({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="rounded-xl border border-neutral-800 bg-[#141414] p-4">
+      <div className="mb-4 flex items-start gap-3">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-neutral-800 bg-[#1A1A1A] text-neutral-300">
+          <Download size={16} />
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-neutral-100">下载质量</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            生成新任务时使用；已创建任务会继续沿用创建时的清晰度。
+          </div>
+        </div>
+      </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <select
+          value={value}
+          onChange={event => onChange(event.target.value)}
+          className="h-10 w-full rounded-lg border border-neutral-800 bg-[#1A1A1A] px-3 text-sm text-neutral-200 outline-none transition-colors focus:border-neutral-600 sm:w-48"
+        >
+          {DOWNLOAD_QUALITY_OPTIONS.map(option => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+        <span className="text-xs text-neutral-500">当前：{value}</span>
+      </div>
+    </div>
+  )
+}
+
+function ModelUsagePanel({
+  config,
+  loaded,
+  saving,
+  chatModels,
+  embeddingModels,
+  onChange,
+  onSave,
+}: {
+  config: ModelUsageConfig
+  loaded: boolean
+  saving: boolean
+  chatModels: UsageModelOption[]
+  embeddingModels: UsageModelOption[]
+  onChange: (patch: Partial<ModelUsageConfig>) => void
+  onSave: () => void
+}) {
+  const qaValue = modelPairValue(config.qa_provider_id, config.qa_model_name)
+  const embeddingValue = modelPairValue(config.embedding_provider_id, config.embedding_model_name)
+
+  return (
+    <div className="rounded-xl border border-neutral-800 bg-[#141414] p-4">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-neutral-100">默认模型选择</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            为空时继续使用 .env 或系统兜底；切换 Embedding 后需重新生成或重建索引。
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!loaded || saving}
+          className="flex h-9 items-center gap-1.5 rounded-lg bg-neutral-200 px-3 text-xs font-semibold text-neutral-950 transition-colors hover:bg-white disabled:opacity-50"
+        >
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+          保存默认模型
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div>
+          <label className="mb-1.5 block text-[11px] font-medium text-neutral-500">问答模型</label>
+          <select
+            value={qaValue}
+            disabled={!loaded}
+            onChange={event => {
+              const pair = parseModelPair(event.target.value)
+              onChange({
+                qa_provider_id: pair.providerId,
+                qa_model_name: pair.modelName,
+              })
+            }}
+            className="h-10 w-full rounded-lg border border-neutral-800 bg-[#1A1A1A] px-3 text-sm text-neutral-200 outline-none focus:border-neutral-600 disabled:opacity-60"
+          >
+            <option value="">系统兜底（.env / Mock）</option>
+            {chatModels.map(option => (
+              <option
+                key={`${option.providerId}:${option.modelName}`}
+                value={modelPairValue(option.providerId, option.modelName)}
+              >
+                {option.providerName} / {option.modelName}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-[11px] font-medium text-neutral-500">Embedding 模型</label>
+          <select
+            value={embeddingValue}
+            disabled={!loaded}
+            onChange={event => {
+              const pair = parseModelPair(event.target.value)
+              onChange({
+                embedding_provider_id: pair.providerId,
+                embedding_model_name: pair.modelName,
+              })
+            }}
+            className="h-10 w-full rounded-lg border border-neutral-800 bg-[#1A1A1A] px-3 text-sm text-neutral-200 outline-none focus:border-neutral-600 disabled:opacity-60"
+          >
+            <option value="">不指定（.env 兼容 / 关键词兜底）</option>
+            {embeddingModels.map(option => (
+              <option
+                key={`${option.providerId}:${option.modelName}`}
+                value={modelPairValue(option.providerId, option.modelName)}
+              >
+                {option.providerName} / {option.modelName}
+              </option>
+            ))}
+          </select>
+          <div className="mt-1.5 text-[11px] leading-relaxed text-neutral-500">
+            选中 Provider 模型时走 Provider；不指定时后端自动尝试 .env 兼容配置，没有 key 则使用关键词检索。
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 type SavedModel = { id: string | number; model_name: string; enabled?: boolean }
 type RemoteModel = {
   id: string
@@ -1194,8 +1543,6 @@ function DownloaderSection() {
   const [qrPolling, setQrPolling] = useState(false)
   const [qrSession, setQrSession] = useState<BilibiliQrCodeSession | null>(null)
   const [qrStatus, setQrStatus] = useState<BilibiliQrCodePollResult | null>(null)
-  const [qualitySetting, setQualitySetting] = useState(() => localStorage.getItem('download_quality') || '1080p')
-  const [embeddingModel, setEmbeddingModel] = useState<string | null>(null)
   const [cookieValidation, setCookieValidation] = useState<DownloaderCookieValidation | null>(null)
   const [proxy, setProxy] = useState<ProxyConfig | null>(null)
   const [proxyDraft, setProxyDraft] = useState({ enabled: false, url: '' })
@@ -1283,13 +1630,6 @@ function DownloaderSection() {
       if (timer !== undefined) window.clearTimeout(timer)
     }
   }, [qrSession])
-
-  useEffect(() => {
-    fetch("/api/v1/system/embedding-model")
-      .then(r => r.json())
-      .then(d => { if (d.model) setEmbeddingModel(d.model) })
-      .catch(() => {})
-  }, [])
 
   const saveCookie = async () => {
     await updateDownloaderCookie({ platform: 'bilibili', cookie })
@@ -1488,45 +1828,6 @@ function DownloaderSection() {
               )}
             </div>
           )}
-        </div>
-
-        <div className="rounded-lg border border-neutral-800 bg-[#1A1A1D] p-5">
-          <div className="mb-4">
-            <div className="mb-1 font-medium text-neutral-200">下载质量</div>
-            <div className="text-xs text-neutral-500">设置视频下载清晰度，仅在支持的分辨率下生效。</div>
-          </div>
-          <div className="flex items-center gap-3">
-            <select
-              value={qualitySetting}
-              onChange={e => { setQualitySetting(e.target.value); localStorage.setItem('download_quality', e.target.value) }}
-              className="h-10 rounded-lg border border-neutral-700 bg-neutral-800 px-3 text-sm text-neutral-200 outline-none transition-colors focus:border-neutral-500"
-            >
-              <option value="360p">360p</option>
-              <option value="480p">480p</option>
-              <option value="720p">720p</option>
-              <option value="1080p">1080p</option>
-            </select>
-            <span className="text-xs text-neutral-500">当前：{qualitySetting}</span>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-neutral-800 bg-[#1A1A1D] p-5">
-          <div className="mb-4">
-            <div className="mb-1 font-medium text-neutral-200">嵌入模型</div>
-            <div className="text-xs text-neutral-500">控制知识库向量化时使用的嵌入模型。保存后需重新提交视频生成笔记才会生效。</div>
-          </div>
-          <div className="flex items-center gap-3">
-            <select
-              value={embeddingModel || 'text-embedding-v3'}
-              onChange={e => { setEmbeddingModel(e.target.value); fetch('/api/v1/system/embedding-model', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model: e.target.value}) }).catch(() => {}) }}
-              className="h-10 rounded-lg border border-neutral-700 bg-neutral-800 px-3 text-sm text-neutral-200 outline-none transition-colors focus:border-neutral-500"
-            >
-              <option value="text-embedding-v3">text-embedding-v3</option>
-              <option value="text-embedding-v2">text-embedding-v2</option>
-              <option value="text-embedding-v1">text-embedding-v1</option>
-            </select>
-            <span className="text-xs text-neutral-500">当前：{embeddingModel}</span>
-          </div>
         </div>
 
         <div className="p-6">

@@ -8,13 +8,19 @@ import threading
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.model_usage import (
+    load_model_usage_config,
+    prune_model_usage_config,
+    save_model_usage_config,
+    validate_model_pair,
+)
 import json
 from pathlib import Path as _Path
 
@@ -109,6 +115,14 @@ class ConfigUpdate(BaseModel):
     retrieval_top_k: int | None = None
     whisper_model_size: str | None = None
     whisper_device: str | None = None
+
+
+class ModelUsageUpdate(BaseModel):
+    qa_provider_id: str | None = None
+    qa_model_name: str | None = None
+    embedding_provider_id: str | None = None
+    embedding_model_name: str | None = None
+    embedding_model: str | None = None
 
 
 @router.put("/config")
@@ -287,26 +301,102 @@ def _get_embedding_config_path() -> _Path:
     return _EMBEDDING_CONFIG_PATH
 
 
-@router.get("/embedding-model")
-def get_embedding_model_config():
-    """获取嵌入模型配置。"""
+def _read_embedding_model_config() -> dict:
     p = _get_embedding_config_path()
     if p.exists():
         try:
             return {"model": json.loads(p.read_text(encoding="utf-8")).get("model", "text-embedding-v3")}
-        except:
+        except Exception:
             pass
     return {"model": "text-embedding-v3"}
+
+
+def _write_embedding_model_config(model: str) -> dict:
+    safe_model = (model or "text-embedding-v3").strip() or "text-embedding-v3"
+    p = _get_embedding_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"model": safe_model}), encoding="utf-8")
+    return {"model": safe_model, "saved": True}
+
+
+@router.get("/embedding-model")
+def get_embedding_model_config():
+    """获取嵌入模型配置。"""
+    return _read_embedding_model_config()
 
 
 @router.put("/embedding-model")
 def set_embedding_model_config(body: dict):
     """设置嵌入模型配置。"""
-    model = (body.get("model") or "text-embedding-v3").strip()
-    p = _get_embedding_config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"model": model}), encoding="utf-8")
-    return {"model": model, "saved": True}
+    return _write_embedding_model_config(body.get("model") or "text-embedding-v3")
+
+
+def _validate_optional_model_pair(db: Session, provider_id: str, model_name: str, label: str) -> None:
+    if not provider_id and not model_name:
+        return
+    if not provider_id or not model_name:
+        raise HTTPException(400, f"{label} Provider 和模型名称必须同时选择")
+    try:
+        validate_model_pair(db, provider_id, model_name)
+    except ValueError as exc:
+        raise HTTPException(400, f"{label}{exc}") from exc
+
+
+@router.get("/model-usage")
+def get_model_usage_config(db: Session = Depends(get_db)):
+    """获取默认用途模型配置。"""
+    config = prune_model_usage_config(db)
+    embedding_model = _read_embedding_model_config()["model"]
+    return {
+        **config,
+        "embedding_model": embedding_model,
+        "env_fallback": {
+            "llm": bool(settings.tongyi_api_key or settings.deepseek_api_key),
+            "embedding": bool(settings.embedding_api_key or settings.tongyi_api_key),
+        },
+    }
+
+
+@router.put("/model-usage")
+def set_model_usage_config(body: ModelUsageUpdate, db: Session = Depends(get_db)):
+    """设置默认用途模型配置。空值表示继续使用 .env / 系统兜底。"""
+    current = load_model_usage_config()
+    next_config = {
+        **current,
+    }
+    if body.qa_provider_id is not None:
+        next_config["qa_provider_id"] = body.qa_provider_id.strip()
+    if body.qa_model_name is not None:
+        next_config["qa_model_name"] = body.qa_model_name.strip()
+    if body.embedding_provider_id is not None:
+        next_config["embedding_provider_id"] = body.embedding_provider_id.strip()
+    if body.embedding_model_name is not None:
+        next_config["embedding_model_name"] = body.embedding_model_name.strip()
+
+    _validate_optional_model_pair(
+        db,
+        next_config["qa_provider_id"],
+        next_config["qa_model_name"],
+        "问答模型",
+    )
+    _validate_optional_model_pair(
+        db,
+        next_config["embedding_provider_id"],
+        next_config["embedding_model_name"],
+        "Embedding 模型",
+    )
+
+    saved = save_model_usage_config(next_config)
+    embedding_model = (
+        _write_embedding_model_config(body.embedding_model)["model"]
+        if body.embedding_model is not None
+        else _read_embedding_model_config()["model"]
+    )
+    return {
+        **saved,
+        "embedding_model": embedding_model,
+        "saved": True,
+    }
 
 # ── GPU 加速相关接口 ──
 

@@ -192,6 +192,17 @@ def _aggregate_stage_tasks(task_id: str, db: Session):
             if video:
                 break
 
+    cancelled = next((item for item in stage_tasks if item.status == "cancelled"), None)
+    if cancelled:
+        return {
+            "task_id": task_id,
+            "video_id": video.video_id if video else None,
+            "status": "cancelled",
+            "progress": cancelled.progress or 0,
+            "message": cancelled.error_message or "任务已取消",
+            "result": None,
+        }
+
     failed = next((item for item in stage_tasks if item.status == "failed"), None)
     if failed:
         return {

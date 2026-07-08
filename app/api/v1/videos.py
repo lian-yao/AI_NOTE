@@ -114,22 +114,59 @@ def _video_local_stream_path(video_id: str) -> str:
     return f"/api/v1/videos/{quote(video_id, safe='')}/media"
 
 
-def _resolve_local_video_path(video: Video | None) -> Path | None:
-    if not video or not video.video_path:
+def _find_video_artifact_path(video: Video | None) -> Path | None:
+    if not video or not video.video_id:
         return None
 
-    path = Path(video.video_path)
-    if not path.is_absolute():
+    candidates_dirs: list[Path] = []
+    for value in (video.video_path, video.audio_path):
+        if not value:
+            continue
+        path = Path(value)
+        if not path.is_absolute():
+            path = project_root() / path
+        candidates_dirs.append(path.parent)
+
+    candidates_dirs.append(project_root() / "data" / "videos" / video.video_id)
+
+    seen_dirs: set[Path] = set()
+    media_candidates: list[Path] = []
+    for directory in candidates_dirs:
+        try:
+            resolved_dir = directory.resolve()
+        except OSError:
+            continue
+        if resolved_dir in seen_dirs or not resolved_dir.is_dir():
+            continue
+        seen_dirs.add(resolved_dir)
+        media_candidates.extend(
+            path for path in resolved_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in _MEDIA_EXTENSIONS
+        )
+
+    if not media_candidates:
+        return None
+    return max(media_candidates, key=lambda path: path.stat().st_size)
+
+
+def _resolve_local_video_path(video: Video | None) -> Path | None:
+    if not video:
+        return None
+
+    path = Path(video.video_path) if video.video_path else None
+    if path and not path.is_absolute():
         path = project_root() / path
 
-    try:
-        path = path.resolve()
-    except OSError:
-        return None
+    if path:
+        try:
+            path = path.resolve()
+        except OSError:
+            path = None
 
-    if not path.is_file() or path.suffix.lower() not in _MEDIA_EXTENSIONS:
-        return None
-    return path
+        if path and path.is_file() and path.suffix.lower() in _MEDIA_EXTENSIONS:
+            return path
+
+    return _find_video_artifact_path(video)
 
 
 def _extract_bvid(value: str | None) -> str | None:
@@ -504,8 +541,12 @@ async def resolve_video_player(body: VideoPlayerRequest, db: Session = Depends(g
     """
     local_stream_url = None
     local_video = _find_video_for_player(db, body.video_id, body.url)
-    if _resolve_local_video_path(local_video) and local_video:
+    local_video_path = _resolve_local_video_path(local_video)
+    if local_video_path and local_video:
         local_stream_url = _video_local_stream_path(local_video.video_id)
+        if str(local_video_path) != (local_video.video_path or ""):
+            local_video.video_path = str(local_video_path)
+            db.commit()
 
     if local_stream_url and local_video:
         embed_url = _bilibili_embed_url(body.url)
@@ -519,7 +560,7 @@ async def resolve_video_player(body: VideoPlayerRequest, db: Session = Depends(g
             cover_url=local_video.cover_url,
             duration_seconds=int(local_video.duration_seconds) if local_video.duration_seconds else None,
             format_id="local-file",
-            ext=Path(local_video.video_path or "").suffix.removeprefix(".") or "mp4",
+            ext=(local_video_path.suffix if local_video_path else "").removeprefix(".") or "mp4",
             is_proxy_stream=True,
             player_type="local",
         )
