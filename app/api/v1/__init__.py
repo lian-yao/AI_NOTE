@@ -14,6 +14,7 @@ from app.api.v1.transcribers import router as transcribers_router
 from app.api.v1.network import router as network_router
 from app.api.v1.platforms import router as platforms_router
 from app.api.v1.models import router as models_router
+from app.api.v1.uploads import router as uploads_router
 
 router = APIRouter(prefix="/v1")
 router.include_router(notes_router)
@@ -28,3 +29,4 @@ router.include_router(transcribers_router)
 router.include_router(network_router)
 router.include_router(platforms_router)
 router.include_router(models_router)
+router.include_router(uploads_router)

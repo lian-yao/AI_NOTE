@@ -1403,6 +1403,10 @@ function isBilibiliSource(value: string): boolean {
   return /(^https?:\/\/)?([^/]+\.)?(bilibili\.com|b23\.tv)\//i.test(value)
 }
 
+function isLocalSource(value: string): boolean {
+  return value.startsWith('local://')
+}
+
 function playerErrorMessage(error: unknown): string {
   if (!error || typeof error !== 'object') return '视频播放地址解析失败'
   const record = error as Record<string, unknown>
@@ -1644,7 +1648,8 @@ function TaskVideoPlayer({
       return
     }
 
-    if (!isBilibiliSource(sourceUrl)) {
+    const isLocal = isLocalSource(sourceUrl)
+    if (!isBilibiliSource(sourceUrl) && !isLocal) {
       setError('当前内置播放器暂只支持 Bilibili 链接')
       return
     }
@@ -1656,20 +1661,22 @@ function TaskVideoPlayer({
         setPlayerSource(data)
         const hasNativeSource = Boolean(data.local_stream_url || data.stream_url)
         setPlayerMode(currentMode =>
-          currentMode === 'embed' && (data.embed_url || fallbackEmbedUrl)
-            ? 'embed'
-            : hasNativeSource
-              ? 'native'
-              : 'embed'
+          isLocal
+            ? 'native'
+            : currentMode === 'embed' && (data.embed_url || fallbackEmbedUrl)
+              ? 'embed'
+              : hasNativeSource
+                ? 'native'
+                : 'embed'
         )
         if (!hasNativeSource && !(data.embed_url || fallbackEmbedUrl)) {
-          setError('暂无可播放视频源')
+          setError(isLocal ? '本地视频文件尚未就绪，请等待处理完成' : '暂无可播放视频源')
         }
       })
       .catch(err => {
         if (cancelled) return
         setError(playerErrorMessage(err))
-        setPlayerMode(!isPlayerAuthError(err) && fallbackEmbedUrl ? 'embed' : 'native')
+        setPlayerMode(!isPlayerAuthError(err) && fallbackEmbedUrl && !isLocal ? 'embed' : 'native')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -1775,8 +1782,9 @@ function TaskVideoPlayer({
     }
   }
 
+  const sourceIsLocal = isLocalSource(sourceUrl)
   const canUseNative = Boolean(streamUrl)
-  const canUseEmbed = Boolean(embedUrl)
+  const canUseEmbed = Boolean(embedUrl) && !sourceIsLocal
   const canShowEmbed = playerMode === 'embed' && canUseEmbed
   const canShowVideo = playerMode === 'native' && canUseNative
 
@@ -1843,6 +1851,7 @@ function TaskVideoPlayer({
           <Video size={13} />
           <span>本地</span>
         </button>
+        {!sourceIsLocal && (
         <button
           type="button"
           onClick={() => setPlayerMode('embed')}
@@ -1858,6 +1867,7 @@ function TaskVideoPlayer({
           <ExternalLink size={13} />
           <span>B站</span>
         </button>
+        )}
         </div>
       </div>
 
