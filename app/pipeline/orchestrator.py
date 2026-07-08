@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from app.core.database import SessionLocal
 from app.core.paths import project_path
+from app.core.config import settings
 from app.core.logger import logger
 from app.models.chunk import Chunk
 from app.models.video import Video
@@ -352,6 +353,62 @@ class PipelineOrchestrator:
         logger.info(f"model: {provider_id}/{model_name}")
         return get_provider_llm_client(provider, model_name)
 
+    @staticmethod
+    def _is_local_source(task: PipelineTask) -> bool:
+        if task.options.get("platform") == "local":
+            return True
+        if task.source_url.startswith("local://"):
+            return True
+        return False
+
+    async def _parse_local_file(self, source_url: str, _platform: str) -> StageResult:
+        import shutil
+        from app.processor.storage import ensure_video_dir, save_meta_json
+
+        local_path = source_url.removeprefix("local://") if source_url.startswith("local://") else source_url
+        src_path = project_path(local_path)
+        if not src_path.is_file():
+            return StageResult(success=False, error=f"本地文件不存在: {src_path}")
+
+        filename = src_path.name
+        suffix = src_path.suffix.lower()
+        is_audio = suffix in {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".wma"}
+        file_size = src_path.stat().st_size
+
+        stem = src_path.stem
+        import uuid as _uuid
+        video_id = f"local_{stem[:16]}" if len(stem) >= 8 and all(c in "0123456789abcdef" for c in stem[:8]) else f"local_{_uuid.uuid4().hex[:12]}"
+
+        video_dir = ensure_video_dir(video_id, settings.data_dir)
+        dest_path = video_dir / f"source{suffix}"
+        if not dest_path.exists():
+            try:
+                shutil.copy2(src_path, dest_path)
+            except OSError as exc:
+                return StageResult(success=False, error=f"复制文件失败: {exc}")
+
+        title = src_path.stem
+        meta = {
+            "video_id": video_id, "url": source_url, "title": title,
+            "uploader": "本地上传", "uploader_uid": "",
+            "duration_seconds": None, "cover_url": "",
+            "description": f"本地{'音频' if is_audio else '视频'}文件: {filename}",
+            "bvid": None, "avid": None, "platform": "local",
+            "local_source_path": str(dest_path), "file_size": file_size,
+        }
+        save_meta_json(video_dir, meta)
+
+        return StageResult(
+            success=True,
+            artifacts={"meta_json": str(video_dir / "meta.json"), "video_dir": str(video_dir)},
+            metadata={
+                "video_id": video_id, "title": title, "uploader": "本地上传",
+                "uploader_uid": "", "description": meta["description"],
+                "duration_seconds": None, "cover_url": "", "bvid": None, "avid": None,
+                "platform": "local", "local_file_path": str(dest_path), "file_size": file_size,
+            },
+        )
+
     async def _run_task(self, task: PipelineTask) -> None:
         "在并发控制下运行完整流水线。"
         async with self._semaphore:
@@ -412,7 +469,13 @@ class PipelineOrchestrator:
         self._emit(PipelineEvent(event="progress", task_id=task.task_id, video_id=task.video_id or "", stage=stage.value, status="running", progress=self._calc_progress(stage, 0), message=f"{stage.label()}..."))
 
         if stage == PipelineStage.PARSE:
-            parse_result = await self.video_processor.parse(task.source_url, "")
+            is_local = self._is_local_source(task)
+            if is_local:
+                parse_result = await self._parse_local_file(task.source_url, task.options.get("platform", ""))
+                task.options["local_file_path"] = parse_result.metadata.get("local_file_path", "")
+                task.options["file_size"] = parse_result.metadata.get("file_size", 0)
+            else:
+                parse_result = await self.video_processor.parse(task.source_url, "")
             if not parse_result.success:
                 raise RuntimeError(parse_result.error)
 
@@ -445,40 +508,92 @@ class PipelineOrchestrator:
                 task.video_db_id = video.id
 
         elif stage == PipelineStage.DOWNLOAD:
-            video_dir = task.options.get("video_dir", "")
-            if not video_dir:
-                video_dir = str(project_path("data", "videos", task.video_id))
+            if self._is_local_source(task):
+                logger.info(f"本地文件跳过下载: {task.task_id}")
+                video_dir = task.options.get("video_dir", "")
+                if not video_dir:
+                    video_dir = str(project_path("data", "videos", task.video_id))
 
-            def on_dl_progress(pct: float):
-                self._sync_progress(task, stage, int(pct))
-            quality = task.options.get("quality", "1080p")
-            logger.info(f"download: [{task.task_id}] quality={quality}")
-            dl_result = await self.video_processor.download(video_dir, quality=task.options.get("quality", "1080p"), progress_cb=on_dl_progress)
-            if not dl_result.success:
-                raise RuntimeError(dl_result.error)
+                local_path = task.options.get("local_file_path", "")
+                suffix = Path(local_path).suffix.lower() if local_path else ""
+                is_audio = suffix in {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".wma"}
 
-            if task.video_id:
-                video = db.query(Video).filter(Video.video_id == task.video_id).first()
-                if video:
-                    video.video_path = dl_result.artifacts.get("video_path")
-                    video.file_size = dl_result.metadata.get("file_size")
-                    video.status = "downloaded"
-                    db.flush()
+                if is_audio and local_path and Path(local_path).is_file():
+                    audio_path = str(Path(video_dir) / "audio.wav")
+                    import subprocess
+                    cmd = [
+                        "ffmpeg", "-y", "-nostdin", "-i", local_path,
+                        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                        audio_path,
+                    ]
+                    try:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, lambda: subprocess.run(
+                            cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        ))
+                    except subprocess.CalledProcessError as exc:
+                        raise RuntimeError(f"音频转换失败: {exc.stderr or exc}")
+                    except FileNotFoundError:
+                        raise RuntimeError("ffmpeg 未安装或不在 PATH 中，请安装 ffmpeg 后重试")
+                elif not is_audio and local_path and Path(local_path).is_file():
+                    import shutil
+                    dest = Path(video_dir) / Path(local_path).name
+                    if not dest.exists():
+                        shutil.copy2(local_path, dest)
+
+                self._sync_progress(task, stage, 100)
+                if task.video_id:
+                    video = db.query(Video).filter(Video.video_id == task.video_id).first()
+                    if video:
+                        if local_path and not video.video_path:
+                            video.video_path = local_path
+                        video.status = "downloaded"
+                        db.flush()
+            else:
+                video_dir = task.options.get("video_dir", "")
+                if not video_dir:
+                    video_dir = str(project_path("data", "videos", task.video_id))
+
+                def on_dl_progress(pct: float):
+                    self._sync_progress(task, stage, int(pct))
+                quality = task.options.get("quality", "1080p")
+                logger.info(f"download: [{task.task_id}] quality={quality}")
+                dl_result = await self.video_processor.download(video_dir, quality=task.options.get("quality", "1080p"), progress_cb=on_dl_progress)
+                if not dl_result.success:
+                    raise RuntimeError(dl_result.error)
+
+                if task.video_id:
+                    video = db.query(Video).filter(Video.video_id == task.video_id).first()
+                    if video:
+                        video.video_path = dl_result.artifacts.get("video_path")
+                        video.file_size = dl_result.metadata.get("file_size")
+                        video.status = "downloaded"
+                        db.flush()
 
         elif stage == PipelineStage.TRANSCRIBE:
             video_dir = task.options.get("video_dir", "")
             if not video_dir:
                 video_dir = str(project_path("data", "videos", task.video_id))
 
-            # 先提取音频
-            def on_audio_progress(pct: float):
-                self._sync_progress(task, stage, int(pct * 0.3))
+            # 本地音频文件：DOWNLOAD 阶段已转换为 audio.wav，直接使用
+            is_local = self._is_local_source(task)
+            local_path = task.options.get("local_file_path", "")
+            suffix = Path(local_path).suffix.lower() if local_path else ""
+            is_local_audio = is_local and suffix in {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".wma"}
+            prebuilt_audio = str(Path(video_dir) / "audio.wav")
 
-            audio_result = await self.video_processor.extract_audio(video_dir, on_audio_progress)
-            if not audio_result.success:
-                raise RuntimeError(audio_result.error or "音频提取失败，未返回错误详情")
+            if is_local_audio and Path(prebuilt_audio).is_file():
+                audio_path = prebuilt_audio
+                self._sync_progress(task, stage, 30)
+            else:
+                def on_audio_progress(pct: float):
+                    self._sync_progress(task, stage, int(pct * 0.3))
 
-            audio_path = audio_result.artifacts.get("audio_path", "")
+                audio_result = await self.video_processor.extract_audio(video_dir, on_audio_progress)
+                if not audio_result.success:
+                    raise RuntimeError(audio_result.error or "音频提取失败，未返回错误详情")
+
+                audio_path = audio_result.artifacts.get("audio_path", "")
 
             # 再转写
             def on_transcribe_progress(pct: float):
