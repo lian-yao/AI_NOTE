@@ -83,6 +83,85 @@ export const indexTask = async (taskId: string, videoId?: string): Promise<void>
   })
 }
 
+export const askQuestionStream = async (
+  data: {
+    task_id?: string
+    video_id?: string
+    question: string
+    history: ChatMessage[]
+    provider_id: string
+    model_name: string
+  },
+  onToken: (token: string) => void,
+  onSources: (sources: ChatSource[]) => void,
+  onDone: () => void,
+): Promise<void> => {
+  const apiBase = (() => {
+    const raw = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+    return raw.replace(/\/+$/, '')
+  })()
+  const url = `${apiBase}/qa/ask/stream`
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: data.question,
+        video_id: data.video_id || data.task_id,
+        note_id: data.video_id,
+        top_k: 5,
+      }),
+    })
+
+    if (!response.ok || !response.body) {
+      throw new Error('stream not available')
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const parsed = JSON.parse(line.slice(6))
+          if (parsed.token) {
+            onToken(parsed.token)
+          }
+          if (parsed.sources) {
+            onSources(parsed.sources.map((s: any) => ({
+              text: s.text || '',
+              source_type: s.start_time != null ? 'transcript' as const : 'markdown' as const,
+              section_title: s.section_title,
+              start_time: s.start_time,
+              end_time: s.end_time,
+            })))
+          }
+          if (parsed.done) {
+            onDone()
+          }
+        } catch {
+          // skip malformed JSON
+        }
+      }
+    }
+  } catch {
+    // fallback to non-streaming
+    const res = await askQuestion(data)
+    onToken(res.answer)
+    onSources(res.sources || [])
+    onDone()
+  }
+}
+
 export const askQuestion = async (data: {
   task_id?: string
   video_id?: string

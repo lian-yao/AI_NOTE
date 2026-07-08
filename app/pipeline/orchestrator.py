@@ -211,13 +211,15 @@ class PipelineOrchestrator:
                     self.transcriber = MockTranscriber()
 
         # ── VectorStore: 暂时用 MockStore（ChromaDB 在 Python 3.13 下会崩溃） ──
+        from app.store.mock import MockStore
         if vector_store:
             self.vector_store = vector_store
         else:
             try:
-                from app.store.mock import MockStore
-                self.vector_store = MockStore()
-            except Exception:
+                from app.store.vector import VectorStore
+                self.vector_store = VectorStore()
+            except Exception as e:
+                logger.warning(f"VectorStore 初始化失败，降级到 MockStore: {e}")
                 self.vector_store = MockStore()
 
         # ── Store: 配合 VectorStore 使用 ──

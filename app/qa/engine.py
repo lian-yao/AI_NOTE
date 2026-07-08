@@ -13,7 +13,7 @@ class QAEngine:
                   top_k: int = 5) -> AsyncGenerator[str, None]:
         """流式生成回答，最后 yield 引用信息"""
         # 1. 检索相关片段
-        chunks = await self.retriever.retrieve(query, top_k=top_k, video_id=video_id if mode=="single" else None)
+        chunks = await self.retriever.retrieve(query, top_k=top_k, note_id=video_id if mode=="single" else None)
         if not chunks:
             yield "未找到相关内容。"
             yield "参考文献：无"

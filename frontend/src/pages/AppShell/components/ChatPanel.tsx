@@ -19,7 +19,7 @@ import { toast } from 'react-hot-toast'
 import { useChatStore } from '@/store/chatStore'
 import { useTaskStore } from '@/store/taskStore'
 import {
-  askQuestion,
+  askQuestion, askQuestionStream,
   getChatStatus,
   indexTask,
   type ChatSource,
@@ -98,6 +98,7 @@ export default function ChatPanel({
     [rawMessages]
   )
   const addMessage = useChatStore(state => state.addMessage)
+  const updateLastMessage = useChatStore(state => state.updateLastMessage)
   const clearChat = useChatStore(state => state.clearChat)
 
   const tasks = useTaskStore(state => state.tasks)
@@ -151,24 +152,30 @@ export default function ChatPanel({
       }
 
       addMessage(taskId, { role: 'user', content: question })
+      addMessage(taskId, { role: 'assistant', content: '' })
       setInput('')
       setLoading(true)
+      let answer = ''
 
       try {
-        const history = messages.map(m => ({ role: m.role, content: m.content }))
-        const res = await askQuestion({
-          task_id: taskId,
-          video_id: videoId,
-          question,
-          history,
-          provider_id: providerId,
-          model_name: modelName,
-        })
-        addMessage(taskId, {
-          role: 'assistant',
-          content: res.answer,
-          sources: res.sources,
-        })
+        await askQuestionStream(
+          {
+            task_id: taskId,
+            video_id: videoId,
+            question,
+            history: messages.map(m => ({ role: m.role, content: m.content })),
+            provider_id: providerId,
+            model_name: modelName,
+          },
+          (token) => {
+            answer += token
+            updateLastMessage(taskId, answer)
+          },
+          (sources) => {
+            updateLastMessage(taskId, answer, sources)
+          },
+          () => {},
+        )
       } catch {
         toast.error('问答请求失败')
       } finally {
