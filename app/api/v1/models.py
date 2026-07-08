@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.model_usage import clear_model_usage_for_model
 from app.core.provider_store import (
     enabled_model_to_dict,
     seed_default_enabled_models,
@@ -93,5 +94,6 @@ async def delete_model(model_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Model not found")
 
     model.enabled = False
+    clear_model_usage_for_model(model.provider_id, model.model_name)
     db.commit()
     return ApiResponse(data={"deleted": True})

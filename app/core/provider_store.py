@@ -53,11 +53,18 @@ def default_enabled_model_rows() -> list[dict[str, str]]:
 
 
 def seed_default_providers(db: Session) -> bool:
-    """Insert built-in providers when missing, preserving user edits."""
+    """Seed env-backed providers for a fresh database without resurrecting deletions."""
     changed = False
+    has_any_provider = db.query(LLMProvider.id).first() is not None
+
     for row in default_provider_rows():
+        if not row.get("api_key"):
+            continue
+
         provider = db.get(LLMProvider, row["id"])
         if provider is None:
+            if has_any_provider:
+                continue
             db.add(LLMProvider(**row))
             changed = True
             continue
@@ -95,7 +102,7 @@ def provider_to_dict(provider: LLMProvider) -> dict[str, Any]:
         "base_url": provider.base_url,
         "enabled": provider.enabled,
         "has_api_key": bool(provider.api_key),
-        "api_key": provider.api_key if provider.api_key else "",
+        "api_key": API_KEY_PLACEHOLDER if provider.api_key else "",
         "created_at": provider.created_at,
         "updated_at": provider.updated_at,
     }

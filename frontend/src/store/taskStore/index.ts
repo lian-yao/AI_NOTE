@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { delete_task, generateNote } from '@/services/note.ts'
+import { cancelBackendTask, delete_task, generateNote } from '@/services/note.ts'
 import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 import { get, set, del } from 'idb-keyval'
@@ -95,6 +95,7 @@ interface TaskStore {
   upsertTask: (task: Task) => void
   updateTaskContent: (id: string, data: Partial<Omit<Task, 'id' | 'createdAt'>>) => void
   removeTask: (id: string) => void
+  cancelTask: (id: string) => void
   clearTasks: () => void
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
@@ -405,17 +406,21 @@ export const useTaskStore = create<TaskStore>()(
         const task = tasks.find(t => t.id === id)
         if (!task) return
         set(state => ({
-          tasks: state.tasks.filter(t => t.id !== id),
-          currentTaskId: state.currentTaskId === id ? null : state.currentTaskId,
+          tasks: state.tasks.map(t =>
+            t.id === id ? { ...t, status: 'CANCELLED', message: '已取消任务' } : t,
+          ),
         }))
         try {
-          const { delete_task } = await import('@/services/note')
-          await delete_task({
-            video_id: task.audioMeta?.video_id || id,
-            platform: task.formData?.platform || "",
-          })
+          await cancelBackendTask(id)
+          toast.success('任务已取消')
         } catch (e) {
-          console.error('删除失败:', e)
+          console.error('取消任务失败:', e)
+          set(state => ({
+            tasks: state.tasks.map(t =>
+              t.id === id ? { ...t, status: task.status, message: task.message } : t,
+            ),
+          }))
+          toast.error('取消任务失败')
         }
       },
 

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.model_usage import clear_model_usage_for_provider
 from app.core.provider_store import (
     normalize_provider_type,
     provider_to_dict,
@@ -113,6 +114,8 @@ async def update_provider(
         provider.api_key = req.api_key or ""
     if req.enabled is not None:
         provider.enabled = req.enabled
+        if req.enabled is False:
+            clear_model_usage_for_provider(provider_id)
 
     db.commit()
     return ApiResponse(data={"updated": True})
@@ -126,6 +129,7 @@ async def delete_provider(provider_id: str, db: Session = Depends(get_db)):
 
     deleted_models = db.query(EnabledModel).filter(EnabledModel.provider_id == provider_id).count()
     db.delete(provider)
+    clear_model_usage_for_provider(provider_id)
     db.commit()
     return ApiResponse(data={"deleted": True, "deleted_models": deleted_models})
 

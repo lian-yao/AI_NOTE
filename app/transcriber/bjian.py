@@ -112,6 +112,7 @@ class BjianTranscriber:
                 "duration_seconds": sum(s["end"] - s["start"] for s in segments),
                 "segments": segments,
                 "full_text": full_text,
+                "source": "bjian",
             }
             json_path = video_dir_path / "transcription.json"
             json_path.write_text(
@@ -132,6 +133,7 @@ class BjianTranscriber:
                     "language": result.get("language", "zh"),
                     "segment_count": len(segments),
                     "transcriber_type": "bjian",
+                    "source": "bjian",
                 },
             )
 

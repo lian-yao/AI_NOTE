@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 from typing import List, Dict, Optional
 from app.store.vector import VectorStore
+from app.store.embedder import EmbeddingConfigurationError
 from app.core.logger import logger
 
 class HybridRetriever:
@@ -31,9 +32,35 @@ class HybridRetriever:
         video_id = note_id
         # 1. 向量检索（由 ChromaDB 处理）
         filter = {"video_id": video_id} if video_id else None
-        vector_results = await self.vector_store.similarity_search(query, top_k=top_k*2, filter=filter)
+        vector_results = []
+        try:
+            vector_results = await self.vector_store.similarity_search(query, top_k=top_k*2, filter=filter)
+        except EmbeddingConfigurationError as exc:
+            logger.warning(f"向量检索跳过：{exc}")
+        except Exception as exc:
+            logger.warning(f"向量检索失败，将使用关键词兜底: {exc}")
         # 2. 关键词检索
         keyword_results = self._keyword_search(query, top_k=top_k*2, video_id=video_id)
+        try:
+            persisted_keyword_results = await self.vector_store.keyword_search(
+                query,
+                top_k=top_k*2,
+                filter=filter,
+            )
+            seen_ids = {item.get("id") for item in keyword_results}
+            keyword_results.extend(
+                item for item in persisted_keyword_results if item.get("id") not in seen_ids
+            )
+        except Exception as exc:
+            logger.warning(f"关键词兜底检索失败: {exc}")
+        try:
+            db_keyword_results = self._db_keyword_search(query, top_k=top_k*2, video_id=video_id)
+            seen_ids = {item.get("id") for item in keyword_results}
+            keyword_results.extend(
+                item for item in db_keyword_results if item.get("id") not in seen_ids
+            )
+        except Exception as exc:
+            logger.warning(f"数据库关键词兜底检索失败: {exc}")
         # 3. RRF 融合
         combined = defaultdict(float)
         k = 60  # RRF 常数
@@ -75,3 +102,65 @@ class HybridRetriever:
                 # 如果缓存没有，可能要从 vector_store 获取，这里先跳过
                 pass
         return results
+
+    def _db_keyword_search(self, query: str, top_k: int, video_id: Optional[str] = None) -> List[Dict]:
+        """Keyword fallback over SQL chunks when remote embeddings are unavailable."""
+        from app.core.database import SessionLocal
+        from app.models.chunk import Chunk
+        from app.models.video import Video
+
+        db = SessionLocal()
+        try:
+            rows_query = db.query(Chunk, Video).join(Video, Chunk.video_id == Video.id)
+            if video_id:
+                rows_query = rows_query.filter(Video.video_id == video_id)
+            rows = rows_query.order_by(Chunk.created_at.desc()).limit(2000).all()
+        finally:
+            db.close()
+
+        if not rows:
+            return []
+
+        terms = self._keyword_terms(query)
+        phrase = (query or "").strip().lower()
+        scored: list[tuple[float, int]] = []
+        for index, (chunk, video) in enumerate(rows):
+            text = (chunk.content or "").lower()
+            score = 0.0
+            for term in terms:
+                score += text.count(term) * (2.0 if len(term) > 1 else 1.0)
+            if phrase and phrase in text:
+                score += 8.0
+            scored.append((score, index))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        selected = [item for item in scored if item[0] > 0][:top_k]
+        if not selected:
+            selected = scored[:top_k]
+
+        results = []
+        for score, index in selected:
+            chunk, video = rows[index]
+            results.append({
+                "id": chunk.chunk_id,
+                "document": chunk.content,
+                "metadata": {
+                    "video_id": video.video_id,
+                    "video_title": video.title,
+                    "section_title": chunk.section_title,
+                    "chunk_index": chunk.chunk_index,
+                    "start_time": chunk.start_time,
+                    "end_time": chunk.end_time,
+                },
+                "distance": 1.0 / (score + 1.0) if score > 0 else 1.0,
+            })
+        return results
+
+    @staticmethod
+    def _keyword_terms(text: str) -> list[str]:
+        lower = (text or "").lower()
+        terms = re.findall(r"[a-z0-9_]+", lower)
+        for run in re.findall(r"[\u4e00-\u9fff]+", lower):
+            terms.extend(run)
+            terms.extend(run[index:index + 2] for index in range(max(0, len(run) - 1)))
+        return list(dict.fromkeys(term for term in terms if term.strip()))

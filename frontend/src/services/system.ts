@@ -38,6 +38,19 @@ export interface SystemConfig {
   video_retention: string
 }
 
+export interface ModelUsageConfig {
+  qa_provider_id: string
+  qa_model_name: string
+  embedding_provider_id: string
+  embedding_model_name: string
+  embedding_model: string
+  env_fallback?: {
+    llm?: boolean
+    embedding?: boolean
+  }
+  saved?: boolean
+}
+
 export interface SystemStats {
   total_videos: number
   completed_videos: number
@@ -62,6 +75,16 @@ export const updateSystemConfig = async (
 
 export const saveSystemConfig = async (): Promise<{ message: string }> => {
   return await request.post('/system/config/save')
+}
+
+export const getModelUsageConfig = async (opts?: CallOpts): Promise<ModelUsageConfig> => {
+  return await request.get('/system/model-usage', cfg(opts))
+}
+
+export const updateModelUsageConfig = async (
+  data: Partial<ModelUsageConfig>,
+): Promise<ModelUsageConfig> => {
+  return await request.put('/system/model-usage', data)
 }
 
 export const getSystemStats = async (opts?: CallOpts): Promise<SystemStats> => {

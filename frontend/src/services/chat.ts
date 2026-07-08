@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { getApiBaseURL } from '@/utils/api'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -23,6 +24,14 @@ export type IndexStatus = 'idle' | 'indexing' | 'indexed' | 'failed'
 export interface ChatStatusResponse {
   indexed: boolean
   status: IndexStatus
+  chunks?: number
+  video_id?: string
+  error?: string
+}
+
+export interface RebuildIndexResponse extends ChatStatusResponse {
+  vector_indexed?: boolean
+  vector_error?: string | null
 }
 
 interface Reference {
@@ -87,8 +96,8 @@ function searchResultToSource(source: ChatSource | SearchResultSource): ChatSour
   }
 }
 
-export const indexTask = async (taskId: string, videoId?: string): Promise<void> => {
-  await request.post('/qa/index', {
+export const indexTask = async (taskId: string, videoId?: string): Promise<RebuildIndexResponse> => {
+  return await request.post('/qa/index', {
     task_id: taskId,
     video_id: videoId,
   })
@@ -107,11 +116,10 @@ export const askQuestionStream = async (
   onSources: (sources: ChatSource[]) => void,
   onDone: () => void,
 ): Promise<void> => {
-  const apiBase = (() => {
-    const raw = import.meta.env.VITE_API_BASE_URL || '/api/v1'
-    return raw.replace(/\/+$/, '')
-  })()
+  const apiBase = getApiBaseURL().replace(/\/+$/, '')
   const url = `${apiBase}/qa/ask/stream`
+  let receivedStreamData = false
+  let streamDone = false
 
   try {
     const response = await fetch(url, {
@@ -122,6 +130,9 @@ export const askQuestionStream = async (
         video_id: data.video_id || data.task_id,
         note_id: data.video_id,
         top_k: 5,
+        provider_id: data.provider_id,
+        model_name: data.model_name,
+        history: data.history,
       }),
     })
 
@@ -145,18 +156,23 @@ export const askQuestionStream = async (
         try {
           const parsed = JSON.parse(line.slice(6)) as StreamEvent
           if (parsed.token) {
+            receivedStreamData = true
             onToken(parsed.token)
           }
           if (Array.isArray(parsed.sources)) {
-            onSources(parsed.sources.map(s => ({
-              text: s.text || '',
-              source_type: s.start_time != null ? 'transcript' as const : 'markdown' as const,
-              section_title: s.section_title,
-              start_time: s.start_time,
-              end_time: s.end_time,
-            })))
+            receivedStreamData = true
+            onSources(
+              parsed.sources.map(s => ({
+                text: s.text || '',
+                source_type: s.start_time != null ? ('transcript' as const) : ('markdown' as const),
+                section_title: s.section_title,
+                start_time: typeof s.start_time === 'number' ? s.start_time : undefined,
+                end_time: typeof s.end_time === 'number' ? s.end_time : undefined,
+              }))
+            )
           }
           if (parsed.done) {
+            streamDone = true
             onDone()
           }
         } catch {
@@ -164,7 +180,12 @@ export const askQuestionStream = async (
         }
       }
     }
+    if (!streamDone) onDone()
   } catch {
+    if (receivedStreamData) {
+      onDone()
+      return
+    }
     // fallback to non-streaming
     const res = await askQuestion(data)
     onToken(res.answer)

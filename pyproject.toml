@@ -12,6 +12,7 @@ dependencies = [
     "logger>=1.4",
     "loguru>=0.7.0",
     "pydantic>=2.0.0",
+    "python-multipart>=0.0.20",
     "pydantic-settings>=2.0.0",
     "sqlalchemy>=2.0.0",
     "uvicorn[standard]>=0.24.0",

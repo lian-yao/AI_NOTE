@@ -16,6 +16,7 @@ import {
   ArrowLeftRight,
   Bot,
   CheckCircle2,
+  ChevronDown,
   Columns2,
   Copy,
   Download,
@@ -26,6 +27,8 @@ import {
   MessageSquare,
   Maximize2,
   Minimize2,
+  PanelTopClose,
+  PanelTopOpen,
   Pause,
   PenSquare,
   Play,
@@ -40,8 +43,9 @@ import {
 } from 'lucide-react'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { cn } from '@/lib/utils'
-import type { Task } from '@/store/taskStore'
+import type { Segment, Task } from '@/store/taskStore'
 import { useTaskStore } from '@/store/taskStore'
+import { get_task_status } from '@/services/note'
 import { getTaskLogs, type TaskLogItem } from '@/services/task'
 import { resolveApiMediaUrl, resolveVideoPlayer, type VideoPlayerSource } from '@/services/video'
 import {
@@ -52,6 +56,7 @@ import {
   getTaskCoverUrl,
   getTaskTimelineSections,
   getTaskTitle,
+  groupSegments,
   resolveDisplayImageUrl,
 } from './utils'
 import MarkdownRenderer from './components/MarkdownRenderer'
@@ -59,6 +64,8 @@ import MarkdownRenderer from './components/MarkdownRenderer'
 const MarkmapEditor = lazy(() => import('./components/MarkmapComponent'))
 const ChatPanel = lazy(() => import('./components/ChatPanel'))
 type MediaPanelMode = 'video-chat' | 'chat-only'
+const DEEP_READING_PREVIEW_SEGMENT_COUNT = 5
+const DEFAULT_TRANSCRIPT_GROUP_SIZE = 1
 
 interface VideoSeekRequest {
   id: number
@@ -94,6 +101,7 @@ const statusLabel: Record<string, string> = {
   SAVING: '保存结果',
   SUCCESS: '总结完成',
   FAILED: '生成失败',
+  CANCELLED: '已取消',
   RUNNING: '处理中',
 }
 
@@ -104,6 +112,7 @@ const PREVIEW_VIDEO_EMBED_URL = `https://player.bilibili.com/player.html?bvid=${
 function getStatusDotClass(status: Task['status']) {
   if (status === 'SUCCESS') return 'bg-primary'
   if (status === 'FAILED') return 'bg-red-400'
+  if (status === 'CANCELLED') return 'bg-neutral-500'
   return 'bg-amber-400'
 }
 
@@ -339,6 +348,7 @@ function EmptyWorkspace({
 function StatusBlock({ task }: { task: Task }) {
   const isFailed = task.status === 'FAILED'
   const isSuccess = task.status === 'SUCCESS'
+  const isCancelled = task.status === 'CANCELLED'
   const label = statusLabel[task.status] || task.status
   const [logs, setLogs] = useState<TaskLogItem[]>([])
   const retryTask = useTaskStore(state => state.retryTask)
@@ -370,6 +380,10 @@ function StatusBlock({ task }: { task: Task }) {
         <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10 text-red-400">
           <RefreshCcw size={26} />
         </div>
+      ) : isCancelled ? (
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-neutral-800 text-neutral-400">
+          <X size={26} />
+        </div>
       ) : (
         <Loader2 className="text-primary h-8 w-8 animate-spin" />
       )}
@@ -380,20 +394,22 @@ function StatusBlock({ task }: { task: Task }) {
         <p className="mt-2 text-sm text-neutral-500">
           {isFailed
             ? task.message || '请检查后端日志或稍后重试。'
+            : isCancelled
+              ? task.message || '任务已取消，可重新生成或删除记录。'
             : '任务正在执行，完成后会自动刷新。'}
         </p>
-        {!isFailed && (
+        {!isFailed && !isCancelled && (
           <button
             type="button"
             onClick={() => cancelTask(task.id)}
-            className="mt-4 flex items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-800/50 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-700/50"
+            className="mx-auto mt-4 inline-flex items-center justify-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-800/50 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-700/50"
           >
             <X size={15} />
             取消任务
           </button>
         )}
       </div>
-      {isFailed && (
+      {(isFailed || isCancelled) && (
         <div className="flex gap-3">
         <button
           type="button"
@@ -569,12 +585,11 @@ function MediaPanelControls({
       <MediaPanelIconButton title="左右互换" onClick={onSwapPanels}>
         <ArrowLeftRight size={15} />
       </MediaPanelIconButton>
-      <MediaPanelIconButton
-        title={videoHidden ? '显示视频区域' : '关闭视频区域'}
-        onClick={() => onModeChange(videoHidden ? 'video-chat' : 'chat-only')}
-      >
-        {videoHidden ? <Video size={15} /> : <X size={15} />}
-      </MediaPanelIconButton>
+      {videoHidden && (
+        <MediaPanelIconButton title="显示视频区域" onClick={() => onModeChange('video-chat')}>
+          <PanelTopOpen size={15} />
+        </MediaPanelIconButton>
+      )}
     </>
   )
 }
@@ -807,6 +822,141 @@ function WorkspaceScrollArea({
   )
 }
 
+function TranscriptLine({
+  segment,
+  onSeekToTime,
+  compact = false,
+}: {
+  segment: Segment
+  onSeekToTime: (seconds: number) => void
+  compact?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSeekToTime(segment.start)}
+      className={cn(
+        'group flex w-full items-start gap-3 rounded-md border border-slate-700/70 bg-[#080B10] px-4 py-3 text-left transition-colors hover:border-blue-400/55 hover:bg-blue-500/5',
+        compact ? 'text-sm' : 'text-[15px]'
+      )}
+      title={`跳转到 ${formatTime(segment.start)}`}
+    >
+      <span className="text-primary w-12 shrink-0 font-mono text-xs leading-6 transition-colors group-hover:text-blue-200">
+        {formatTime(segment.start)}
+      </span>
+      <span className="min-w-0 flex-1 leading-6 text-neutral-300 group-hover:text-neutral-100">
+        {segment.text}
+      </span>
+    </button>
+  )
+}
+
+function TranscriptGroupLine({
+  start,
+  text,
+  onSeekToTime,
+}: {
+  start: number
+  text: string
+  onSeekToTime: (seconds: number) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSeekToTime(start)}
+      className="group flex w-full items-start gap-3 rounded-md border border-slate-700/70 bg-[#080B10] px-4 py-3 text-left text-sm transition-colors hover:border-blue-400/55 hover:bg-blue-500/5"
+      title={`跳转到 ${formatTime(start)}`}
+    >
+      <span className="text-primary w-12 shrink-0 font-mono text-xs leading-6 transition-colors group-hover:text-blue-200">
+        {formatTime(start)}
+      </span>
+      <span className="min-w-0 flex-1 leading-6 text-neutral-200 group-hover:text-neutral-50">
+        {text}
+      </span>
+    </button>
+  )
+}
+
+function DeepReadingTranscriptList({
+  segments,
+  expanded,
+  onSeekToTime,
+}: {
+  segments: Segment[]
+  expanded: boolean
+  onSeekToTime: (seconds: number) => void
+}) {
+  const visibleSegments = expanded
+    ? segments
+    : segments.slice(0, DEEP_READING_PREVIEW_SEGMENT_COUNT)
+
+  if (segments.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-neutral-800 bg-[#0A0A0A] px-4 py-8 text-center text-sm text-neutral-600">
+        当前时间范围内暂无字幕原文
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2 text-[15px] leading-7 text-neutral-100">
+      {visibleSegments.map(segment => (
+        <button
+          key={`${segment.start}-${segment.text}`}
+          type="button"
+          onClick={() => onSeekToTime(segment.start)}
+          className="block w-full rounded-md px-2 py-0.5 text-left transition-colors hover:bg-blue-500/10"
+          title={`跳转到 ${formatTime(segment.start)}`}
+        >
+          {segment.text}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function TranscriptScriptList({
+  segments,
+  groupSize,
+  onSeekToTime,
+}: {
+  segments: Segment[]
+  groupSize: number
+  onSeekToTime: (seconds: number) => void
+}) {
+  if (segments.length === 0) {
+    return <div className="py-10 text-center text-neutral-500">暂无字幕数据</div>
+  }
+
+  if (groupSize <= 1) {
+    return (
+      <div className="space-y-3">
+        {segments.map(segment => (
+          <TranscriptLine
+            key={`${segment.start}-${segment.text}`}
+            segment={segment}
+            onSeekToTime={onSeekToTime}
+            compact
+          />
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {groupSegments(segments, groupSize).map((group, index) => (
+        <TranscriptGroupLine
+          key={`${group.start}-${index}`}
+          start={group.start}
+          text={group.text}
+          onSeekToTime={onSeekToTime}
+        />
+      ))}
+    </div>
+  )
+}
+
 function SummaryContent({
   task,
   onSeekToTime,
@@ -821,6 +971,8 @@ function SummaryContent({
   const [editorMode, setEditorMode] = useState<'write' | 'split' | 'preview'>('split')
   const [draftContent, setDraftContent] = useState('')
   const [showDeepReadingScreenshots, setShowDeepReadingScreenshots] = useState(true)
+  const [expandedDeepReadingSections, setExpandedDeepReadingSections] = useState<Record<string, boolean>>({})
+  const [transcriptGroupSize, setTranscriptGroupSize] = useState(DEFAULT_TRANSCRIPT_GROUP_SIZE)
   const retryTask = useTaskStore(state => state.retryTask)
   const updateTaskContent = useTaskStore(state => state.updateTaskContent)
   const { content, version } = getLatestMarkdown(task.markdown)
@@ -842,7 +994,28 @@ function SummaryContent({
     setDraftContent(content)
     setEditorMode('split')
     setIsEditing(false)
+    setExpandedDeepReadingSections({})
   }, [content, task.id])
+
+  useEffect(() => {
+    if (task.status !== 'SUCCESS' || segments.length > 0) return
+
+    const lookupId = task.audioMeta?.video_id || task.id
+    if (!lookupId) return
+
+    let cancelled = false
+    get_task_status(lookupId)
+      .then(res => {
+        const transcript = res.result?.transcript
+        if (cancelled || !transcript?.segments?.length) return
+        updateTaskContent(task.id, { transcript })
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [segments.length, task.audioMeta?.video_id, task.id, task.status, updateTaskContent])
 
   const handleStartEditing = () => {
     setDraftContent(content)
@@ -1140,24 +1313,13 @@ function SummaryContent({
                   按内容时间块阅读字幕原文，左侧保留对应关键截图
                 </p>
               </div>
-              <div className="flex items-center gap-2 text-xs text-neutral-400">
-                <span>显示截图</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={showDeepReadingScreenshots}
-                  onClick={() => setShowDeepReadingScreenshots(value => !value)}
-                  className={`relative h-5 w-9 rounded-full transition-colors ${
-                    showDeepReadingScreenshots ? 'bg-neutral-100' : 'bg-neutral-700'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-black transition-transform ${
-                      showDeepReadingScreenshots ? 'translate-x-4' : 'translate-x-0.5'
-                    }`}
-                  />
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowDeepReadingScreenshots(value => !value)}
+                className="rounded-md border border-neutral-800 bg-[#151515] px-2.5 py-1 text-xs text-neutral-400 transition-colors hover:border-neutral-700 hover:bg-neutral-800/60 hover:text-neutral-200"
+              >
+                {showDeepReadingScreenshots ? '隐藏截图' : '显示截图'}
+              </button>
             </div>
             {timelineSections.length > 0 ? (
               timelineSections.map(section => {
@@ -1174,11 +1336,19 @@ function SummaryContent({
                 const screenshotUrl =
                   resolveTaskImageUrl(section.screenshotUrl, task.audioMeta?.platform) ||
                   getTaskSnapshotUrl(task, section.startTime)
+                const isSectionExpanded = Boolean(expandedDeepReadingSections[section.key])
+                const canToggleSection =
+                  relatedSegments.length > DEEP_READING_PREVIEW_SEGMENT_COUNT
 
                 return (
                   <section
                     key={section.key}
-                    className="grid gap-5 border-b border-neutral-800/45 pb-8 last:border-b-0 lg:grid-cols-[240px_minmax(0,1fr)]"
+                    className={cn(
+                      'grid gap-5 border-b border-neutral-800/45 pb-8 last:border-b-0',
+                      showDeepReadingScreenshots
+                        ? 'lg:grid-cols-[240px_minmax(0,1fr)]'
+                        : 'lg:grid-cols-1'
+                    )}
                   >
                     {showDeepReadingScreenshots && (
                       <div className="lg:pt-1">
@@ -1207,27 +1377,34 @@ function SummaryContent({
                         <span className="shrink-0 text-xs text-neutral-600">
                           {relatedSegments.length} 条字幕
                         </span>
+                        {canToggleSection && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedDeepReadingSections(prev => ({
+                                ...prev,
+                                [section.key]: !prev[section.key],
+                              }))
+                            }
+                            className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-800/70 hover:text-neutral-200"
+                          >
+                            <ChevronDown
+                              size={14}
+                              className={cn(
+                                'transition-transform',
+                                isSectionExpanded ? 'rotate-180' : ''
+                              )}
+                            />
+                            {isSectionExpanded ? '收起' : `展开 ${relatedSegments.length} 条`}
+                          </button>
+                        )}
                       </div>
 
-                      {relatedSegments.length > 0 ? (
-                        <div className="space-y-2 text-[15px] leading-7 text-neutral-100">
-                          {relatedSegments.map(segment => (
-                            <button
-                              key={`${segment.start}-${segment.text}`}
-                              type="button"
-                              onClick={() => onSeekToTime(segment.start)}
-                              className="block w-full rounded-md px-2 py-0.5 text-left transition-colors hover:bg-blue-500/10"
-                              title={`跳转到 ${formatTime(segment.start)}`}
-                            >
-                              {segment.text}
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="rounded-md border border-dashed border-neutral-800 bg-[#0A0A0A] px-4 py-8 text-center text-sm text-neutral-600">
-                          当前时间范围内暂无字幕原文
-                        </div>
-                      )}
+                      <DeepReadingTranscriptList
+                        segments={relatedSegments}
+                        expanded={isSectionExpanded}
+                        onSeekToTime={onSeekToTime}
+                      />
                     </div>
                   </section>
                 )
@@ -1242,35 +1419,39 @@ function SummaryContent({
 
         <WorkspaceScrollArea active={activeTab === 'transcript'} className="pt-6 pr-3 pb-20 pl-6">
           <div className="mx-auto max-w-3xl">
-            <div className="mb-6 flex items-center justify-between border-b border-neutral-800/50 pb-4">
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-neutral-800/50 pb-4">
               <h2 className="text-lg font-bold text-neutral-100">字幕脚本</h2>
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="flex items-center gap-1 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
-              >
-                <Copy size={14} />
-                复制全部
-              </button>
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-3 text-xs text-neutral-400">
+                  <span>字幕分组:</span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={12}
+                    step={1}
+                    value={transcriptGroupSize}
+                    onChange={event => setTranscriptGroupSize(Number(event.target.value))}
+                    className="h-1 w-28 accent-neutral-200"
+                    aria-label="字幕分组条数"
+                  />
+                  <span className="min-w-7 text-neutral-300">{transcriptGroupSize}条</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="flex items-center gap-1 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
+                >
+                  <Copy size={14} />
+                  复制全部
+                </button>
+              </div>
             </div>
             <div className="space-y-4 rounded-xl border border-neutral-800/80 bg-[#0A0A0A] p-6">
-              {segments.length > 0 ? (
-                segments.map(segment => (
-                  <div key={`${segment.start}-${segment.text}`} className="flex gap-4 text-sm">
-                    <button
-                      type="button"
-                      onClick={() => onSeekToTime(segment.start)}
-                      className="text-primary w-14 shrink-0 text-left font-mono transition-colors hover:text-blue-200"
-                      title="跳转到视频位置"
-                    >
-                      {formatTime(segment.start)}
-                    </button>
-                    <div className="leading-relaxed text-neutral-300">{segment.text}</div>
-                  </div>
-                ))
-              ) : (
-                <div className="py-10 text-center text-neutral-500">暂无字幕数据</div>
-              )}
+              <TranscriptScriptList
+                segments={segments}
+                groupSize={transcriptGroupSize}
+                onSeekToTime={onSeekToTime}
+              />
             </div>
           </div>
         </WorkspaceScrollArea>
@@ -1403,6 +1584,10 @@ function isBilibiliSource(value: string): boolean {
   return /(^https?:\/\/)?([^/]+\.)?(bilibili\.com|b23\.tv)\//i.test(value)
 }
 
+function isLocalSource(value: string): boolean {
+  return value.startsWith('local://')
+}
+
 function playerErrorMessage(error: unknown): string {
   if (!error || typeof error !== 'object') return '视频播放地址解析失败'
   const record = error as Record<string, unknown>
@@ -1455,11 +1640,13 @@ function TaskVideoPlayer({
   title,
   coverUrl,
   seekRequest,
+  onCollapseVideo,
 }: {
   task: Task
   title: string
   coverUrl: string
   seekRequest?: VideoSeekRequest | null
+  onCollapseVideo: () => void
 }) {
   const playerHostRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -1644,7 +1831,8 @@ function TaskVideoPlayer({
       return
     }
 
-    if (!isBilibiliSource(sourceUrl)) {
+    const isLocal = isLocalSource(sourceUrl)
+    if (!isBilibiliSource(sourceUrl) && !isLocal) {
       setError('当前内置播放器暂只支持 Bilibili 链接')
       return
     }
@@ -1656,20 +1844,22 @@ function TaskVideoPlayer({
         setPlayerSource(data)
         const hasNativeSource = Boolean(data.local_stream_url || data.stream_url)
         setPlayerMode(currentMode =>
-          currentMode === 'embed' && (data.embed_url || fallbackEmbedUrl)
-            ? 'embed'
-            : hasNativeSource
-              ? 'native'
-              : 'embed'
+          isLocal
+            ? 'native'
+            : currentMode === 'embed' && (data.embed_url || fallbackEmbedUrl)
+              ? 'embed'
+              : hasNativeSource
+                ? 'native'
+                : 'embed'
         )
         if (!hasNativeSource && !(data.embed_url || fallbackEmbedUrl)) {
-          setError('暂无可播放视频源')
+          setError(isLocal ? '本地视频文件尚未就绪，请等待处理完成' : '暂无可播放视频源')
         }
       })
       .catch(err => {
         if (cancelled) return
         setError(playerErrorMessage(err))
-        setPlayerMode(!isPlayerAuthError(err) && fallbackEmbedUrl ? 'embed' : 'native')
+        setPlayerMode(!isPlayerAuthError(err) && fallbackEmbedUrl && !isLocal ? 'embed' : 'native')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -1775,8 +1965,9 @@ function TaskVideoPlayer({
     }
   }
 
+  const sourceIsLocal = isLocalSource(sourceUrl)
   const canUseNative = Boolean(streamUrl)
-  const canUseEmbed = Boolean(embedUrl)
+  const canUseEmbed = Boolean(embedUrl) && !sourceIsLocal
   const canShowEmbed = playerMode === 'embed' && canUseEmbed
   const canShowVideo = playerMode === 'native' && canUseNative
 
@@ -1814,13 +2005,13 @@ function TaskVideoPlayer({
       className="workspace-video-player relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black"
     >
       <div
-        className={`absolute top-3 right-3 z-30 rounded-full border border-white/10 bg-black/38 p-1 text-xs text-neutral-200 shadow-2xl backdrop-blur-md transition-all duration-300 ${
+        className={`absolute top-3 right-3 z-30 flex items-center gap-2 transition-all duration-300 ${
           controlsVisible || !playing
             ? 'translate-y-0 opacity-100'
             : 'pointer-events-none -translate-y-2 opacity-0'
         }`}
       >
-        <div className="relative grid w-[138px] grid-cols-2">
+        <div className="relative grid w-[138px] grid-cols-2 rounded-full border border-white/10 bg-black/38 p-1 text-xs text-neutral-200 shadow-2xl backdrop-blur-md">
           <span
             aria-hidden
             className="absolute top-0 bottom-0 left-0 w-1/2 rounded-full bg-white shadow-[0_5px_18px_rgba(255,255,255,0.18)] transition-transform duration-300 ease-out"
@@ -1828,37 +2019,45 @@ function TaskVideoPlayer({
               transform: playerMode === 'embed' ? 'translateX(100%)' : 'translateX(0)',
             }}
           />
-        <button
-          type="button"
-          onClick={() => setPlayerMode('native')}
-          disabled={!canUseNative}
-          aria-pressed={playerMode === 'native'}
-          className={`relative z-10 flex h-7 items-center justify-center gap-1 rounded-full px-2 transition-colors duration-300 disabled:cursor-not-allowed disabled:opacity-35 ${
-            playerMode === 'native'
-              ? 'text-neutral-950'
-              : 'text-neutral-300 hover:text-white'
-          }`}
-          title="使用本地播放器"
-        >
-          <Video size={13} />
-          <span>本地</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setPlayerMode('embed')}
-          disabled={!canUseEmbed}
-          aria-pressed={playerMode === 'embed'}
-          className={`relative z-10 flex h-7 items-center justify-center gap-1 rounded-full px-2 transition-colors duration-300 disabled:cursor-not-allowed disabled:opacity-35 ${
-            playerMode === 'embed'
-              ? 'text-neutral-950'
-              : 'text-neutral-300 hover:text-white'
-          }`}
-          title="使用 B 站播放器"
-        >
-          <ExternalLink size={13} />
-          <span>B站</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => setPlayerMode('native')}
+            disabled={!canUseNative}
+            aria-pressed={playerMode === 'native'}
+            className={`relative z-10 flex h-7 items-center justify-center gap-1 rounded-full px-2 transition-colors duration-300 disabled:cursor-not-allowed disabled:opacity-35 ${
+              playerMode === 'native' ? 'text-neutral-950' : 'text-neutral-300 hover:text-white'
+            }`}
+            title="使用本地播放器"
+          >
+            <Video size={13} />
+            <span>本地</span>
+          </button>
+          {!sourceIsLocal && (
+            <button
+              type="button"
+              onClick={() => setPlayerMode('embed')}
+              disabled={!canUseEmbed}
+              aria-pressed={playerMode === 'embed'}
+              className={`relative z-10 flex h-7 items-center justify-center gap-1 rounded-full px-2 transition-colors duration-300 disabled:cursor-not-allowed disabled:opacity-35 ${
+                playerMode === 'embed' ? 'text-neutral-950' : 'text-neutral-300 hover:text-white'
+              }`}
+              title="使用 B 站播放器"
+            >
+              <ExternalLink size={13} />
+              <span>B站</span>
+            </button>
+          )}
         </div>
+        <button
+          type="button"
+          onClick={onCollapseVideo}
+          className="flex h-9 items-center gap-1.5 rounded-full border border-white/10 bg-black/55 px-3 text-xs font-medium text-neutral-100 shadow-2xl backdrop-blur-md transition-colors hover:bg-white/14 hover:text-white"
+          title="收起视频区域"
+          aria-label="收起视频区域"
+        >
+          <PanelTopClose size={14} />
+          <span>收起视频</span>
+        </button>
       </div>
 
       {canShowEmbed ? (
@@ -2227,6 +2426,16 @@ function VideoChatPanel({
               <div className="absolute top-3 left-3 rounded-full bg-black/70 px-2 py-1 text-xs text-neutral-200 backdrop-blur-sm">
                 示例数据
               </div>
+              <button
+                type="button"
+                onClick={() => onModeChange('chat-only')}
+                className="absolute top-3 right-3 z-10 flex h-9 items-center gap-1.5 rounded-full border border-white/10 bg-black/55 px-3 text-xs font-medium text-neutral-100 shadow-2xl backdrop-blur-md transition-colors hover:bg-white/14 hover:text-white"
+                title="收起视频区域"
+                aria-label="收起视频区域"
+              >
+                <PanelTopClose size={14} />
+                <span>收起视频</span>
+              </button>
             </div>
 
             <div className="shrink-0 border-b border-neutral-800 p-4">
@@ -2268,6 +2477,7 @@ function VideoChatPanel({
             title={title}
             coverUrl={coverUrl}
             seekRequest={seekRequest}
+            onCollapseVideo={() => onModeChange('chat-only')}
           />
 
           <div className="shrink-0 border-b border-neutral-800 p-4">

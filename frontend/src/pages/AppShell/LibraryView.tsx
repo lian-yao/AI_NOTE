@@ -3,14 +3,18 @@ import {
   Filter,
   Folder,
   FolderOpen,
+  Loader2,
   MoreVertical,
   PlayCircle,
   Plus,
+  RefreshCcw,
   Search,
   Trash2,
 } from 'lucide-react'
+import toast from 'react-hot-toast'
 import type { Task } from '@/store/taskStore'
 import { isMockBackend, isMockLikeTask, useTaskStore } from '@/store/taskStore'
+import { indexTask } from '@/services/chat'
 import { get_task_status, type TaskStatusResponse } from '@/services/note'
 import { getNoteRaw, getVideo, listVideos, type VideoItem } from '@/services/video'
 import { formatDate, formatTime, getTaskAuthor, getTaskCoverUrl, getTaskTitle } from './utils'
@@ -46,6 +50,7 @@ const statusLabel: Record<string, string> = {
   SAVING: '保存结果',
   SUCCESS: '已完成',
   FAILED: '失败',
+  CANCELLED: '已取消',
   RUNNING: '处理中',
 }
 
@@ -53,6 +58,7 @@ function normalizeVideoStatus(status: string): Task['status'] {
   const value = status.toLowerCase()
   if (value === 'completed' || value === 'success' || value === 'stored') return 'SUCCESS'
   if (value === 'failed') return 'FAILED'
+  if (value === 'cancelled') return 'CANCELLED'
   if (value === 'pending') return 'PENDING'
   if (value === 'downloading') return 'DOWNLOADING'
   if (value === 'transcribing') return 'TRANSCRIBING'
@@ -166,18 +172,24 @@ async function loadBackendTaskResult(video: VideoItem): Promise<{
   result: BackendTaskResult | null
   status?: Task['status']
 }> {
-  if (!isMockBackend) return { taskId: null, result: null }
-
   const detailedVideo =
-    video.tasks?.length
-      ? video
-      : await getVideo(video.video_id, { silent: true }).catch(() => video)
-  const taskId = latestTaskId(detailedVideo)
+    isMockBackend && !video.tasks?.length
+      ? await getVideo(video.video_id, { silent: true }).catch(() => video)
+      : video
+  const taskId =
+    latestTaskId(detailedVideo) ||
+    (video.video_id ? video.video_id : null)
   if (!taskId) return { taskId: null, result: null }
 
-  const task = await get_task_status(taskId).catch(() => null)
+  const task =
+    await get_task_status(taskId).catch(() =>
+      taskId !== video.video_id && video.video_id
+        ? get_task_status(video.video_id).catch(() => null)
+        : null
+    )
+
   return {
-    taskId,
+    taskId: task?.task_id || taskId,
     result: task?.result || null,
     status: task?.status,
   }
@@ -217,6 +229,7 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
   const [search, setSearch] = useState('')
   const [backendSyncing, setBackendSyncing] = useState(false)
   const [backendSyncFailed, setBackendSyncFailed] = useState(false)
+  const [reindexingTaskId, setReindexingTaskId] = useState<string | null>(null)
   const tasks = useMemo(
     () => (isMockBackend ? storedTasks : storedTasks.filter(task => !isMockLikeTask(task))),
     [storedTasks],
@@ -334,6 +347,29 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
       return next
     })
     if (selectedFolderId === folder.id) setSelectedFolderId(null)
+  }
+
+  const handleRebuildIndex = async (task: Task) => {
+    const videoId = task.audioMeta?.video_id || task.id
+    if (!videoId) {
+      toast.error('无法定位对应视频，不能重建索引')
+      return
+    }
+
+    setOpenMenuId(null)
+    setReindexingTaskId(task.id)
+    try {
+      const result = await indexTask(task.id, videoId)
+      if (result.status === 'indexed') {
+        toast.success(`索引已重建${result.chunks ? `：${result.chunks} 个片段` : ''}`)
+      } else {
+        toast.error(result.error || '未找到可索引的笔记内容')
+      }
+    } catch {
+      toast.error('重建索引失败')
+    } finally {
+      setReindexingTaskId(null)
+    }
   }
 
   return (
@@ -474,6 +510,8 @@ export default function LibraryView({ onSelectTask }: LibraryViewProps) {
                   onSelect={() => onSelectTask(task.id)}
                   onMove={folderId => updateItemFolder(task.id, folderId)}
                   onRemove={() => removeTask(task.id)}
+                  onRebuildIndex={() => handleRebuildIndex(task)}
+                  reindexing={reindexingTaskId === task.id}
                 />
               ))}
             </div>
@@ -493,6 +531,8 @@ function TaskCard({
   onSelect,
   onMove,
   onRemove,
+  onRebuildIndex,
+  reindexing,
 }: {
   task: Task
   folders: LibraryFolder[]
@@ -502,6 +542,8 @@ function TaskCard({
   onSelect: () => void
   onMove: (folderId: string | null) => void
   onRemove: () => void
+  onRebuildIndex: () => void
+  reindexing: boolean
 }) {
   const coverUrl = getTaskCoverUrl(task)
   const title = getTaskTitle(task)
@@ -609,6 +651,15 @@ function TaskCard({
               </button>
             ))}
             <div className="my-1 border-t border-neutral-800" />
+            <button
+              type="button"
+              onClick={onRebuildIndex}
+              disabled={reindexing}
+              className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-neutral-300 transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {reindexing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+              重建索引
+            </button>
             <button
               type="button"
               onClick={onRemove}

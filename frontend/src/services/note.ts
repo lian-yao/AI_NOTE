@@ -97,6 +97,7 @@ function normalizeTaskStatus(status?: string, stage?: string): TaskStatus {
 
   if (value === 'completed' || value === 'success') return 'SUCCESS'
   if (value === 'failed') return 'FAILED'
+  if (value === 'cancelled') return 'CANCELLED'
   if (value === 'pending') return 'PENDING'
   if (value === 'running' || value === 'retrying') {
     if (stage === 'parse') return 'PARSING'

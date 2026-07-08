@@ -16,5 +16,10 @@ class MockLLM:
             "- 未来十年将有更多突破"
         )
 
+    async def stream_chat(self, messages: list[dict], **kwargs):
+        answer = await self.chat(messages, **kwargs)
+        for char in answer:
+            yield char
+
     async def embed(self, texts: list[str], **kwargs) -> list[list[float]]:
         return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
