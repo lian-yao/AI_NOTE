@@ -488,6 +488,29 @@ async def resolve_video_player(body: VideoPlayerRequest, db: Session = Depends(g
             player_type="local",
         )
 
+    # ── 本地上传文件: 直接从上载目录流式播放 ──
+    if body.url and body.url.startswith("local://"):
+        local_path = body.url.removeprefix("local://")
+        from app.core.paths import project_path as _pp
+        file_path = _pp(local_path)
+        if file_path.is_file():
+            suffix = file_path.suffix.lower()
+            return VideoPlayerResponse(
+                title=file_path.stem,
+                source_url=body.url,
+                webpage_url=None,
+                stream_url=f"/api/v1/uploads/videos/{file_path.stem}/media",
+                local_stream_url=f"/api/v1/uploads/videos/{file_path.stem}/media",
+                embed_url=None,
+                cover_url=None,
+                duration_seconds=None,
+                format_id="local-upload",
+                ext=suffix.removeprefix(".") or "mp4",
+                is_proxy_stream=True,
+                player_type="local",
+            )
+        # 文件已不存在（可能被清理），继续尝试 Bilibili 解析
+
     info = await _resolve_player_info(body.url, body.quality)
     stream_url = None
     if info.get("direct_url"):

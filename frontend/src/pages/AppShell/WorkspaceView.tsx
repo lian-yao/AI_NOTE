@@ -1275,6 +1275,10 @@ function isBilibiliSource(value: string): boolean {
   return /(^https?:\/\/)?([^/]+\.)?(bilibili\.com|b23\.tv)\//i.test(value)
 }
 
+function isLocalSource(value: string): boolean {
+  return value.startsWith('local://')
+}
+
 function playerErrorMessage(error: unknown): string {
   if (!error || typeof error !== 'object') return '视频播放地址解析失败'
   const record = error as Record<string, unknown>
@@ -1379,26 +1383,28 @@ function TaskVideoPlayer({
       return
     }
 
-    if (!isBilibiliSource(sourceUrl)) {
+    const isLocal = isLocalSource(sourceUrl)
+    if (!isBilibiliSource(sourceUrl) && !isLocal) {
       setError('当前内置播放器暂只支持 Bilibili 链接')
       return
     }
 
+    // 本地文件：直接尝试通过后端解析，后端会返回 local_stream_url
     setLoading(true)
     resolveVideoPlayer(sourceUrl, quality, videoId, { silent: true })
       .then(data => {
         if (cancelled) return
         setPlayerSource(data)
         const hasNativeSource = Boolean(data.local_stream_url || data.stream_url)
-        setPlayerMode(hasNativeSource ? 'native' : 'embed')
+        setPlayerMode(hasNativeSource ? 'native' : isLocal ? 'native' : 'embed')
         if (!hasNativeSource && !(data.embed_url || fallbackEmbedUrl)) {
-          setError('暂无可播放视频源')
+          setError(isLocal ? '本地视频文件尚未就绪，请等待处理完成' : '暂无可播放视频源')
         }
       })
       .catch(err => {
         if (cancelled) return
         setError(playerErrorMessage(err))
-        setPlayerMode(!isPlayerAuthError(err) && fallbackEmbedUrl ? 'embed' : 'native')
+        setPlayerMode(!isPlayerAuthError(err) && fallbackEmbedUrl && !isLocal ? 'embed' : 'native')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -1443,8 +1449,9 @@ function TaskVideoPlayer({
     }
   }
 
+  const sourceIsLocal = isLocalSource(sourceUrl)
   const canUseNative = Boolean(streamUrl)
-  const canUseEmbed = Boolean(embedUrl)
+  const canUseEmbed = Boolean(embedUrl) && !sourceIsLocal
   const canShowEmbed = playerMode === 'embed' && canUseEmbed
   const canShowVideo = playerMode === 'native' && canUseNative
 
@@ -1461,16 +1468,18 @@ function TaskVideoPlayer({
         >
           本地
         </button>
-        <button
-          type="button"
-          onClick={() => setPlayerMode('embed')}
-          disabled={!canUseEmbed}
-          className={`rounded-full px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-            playerMode === 'embed' ? 'bg-neutral-100 text-neutral-950' : 'hover:bg-neutral-800'
-          }`}
-        >
-          B站
-        </button>
+        {!sourceIsLocal && (
+          <button
+            type="button"
+            onClick={() => setPlayerMode('embed')}
+            disabled={!canUseEmbed}
+            className={`rounded-full px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+              playerMode === 'embed' ? 'bg-neutral-100 text-neutral-950' : 'hover:bg-neutral-800'
+            }`}
+          >
+            B站
+          </button>
+        )}
       </div>
 
       {canShowEmbed ? (
