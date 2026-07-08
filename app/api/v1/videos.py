@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import re
+import subprocess
 import time
 from urllib.parse import quote
 from urllib.parse import urlparse
@@ -11,12 +12,13 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from pathlib import Path
 
 from app.core.database import get_db
+from app.core.paths import project_root
 from app.models.video import Video
 from app.models.note import Note
 from app.schemas.video import VideoResponse
@@ -118,7 +120,7 @@ def _resolve_local_video_path(video: Video | None) -> Path | None:
 
     path = Path(video.video_path)
     if not path.is_absolute():
-        path = Path.cwd() / path
+        path = project_root() / path
 
     try:
         path = path.resolve()
@@ -247,6 +249,40 @@ def _stream_local_file(path: Path, request: Request) -> StreamingResponse:
         headers=headers,
         media_type=media_type,
     )
+
+
+def _snapshot_path(video_path: Path, seconds: int) -> Path:
+    snapshot_dir = video_path.parent / "snapshots"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    return snapshot_dir / f"{seconds:06d}.jpg"
+
+
+def _generate_snapshot_sync(video_path: Path, output_path: Path, seconds: int) -> None:
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-nostdin",
+            "-ss",
+            str(max(0, seconds)),
+            "-i",
+            str(video_path),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            str(output_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
+        detail = (result.stderr or result.stdout or "ffmpeg 截图失败").strip()
+        raise RuntimeError(detail[-500:])
 
 
 def _bilibili_embed_url(source_url: str, info: dict | None = None) -> str | None:
@@ -580,6 +616,31 @@ async def stream_local_video_media(
     if not path:
         raise HTTPException(status_code=404, detail="本地视频文件不存在")
     return _stream_local_file(path, request)
+
+
+@router.get("/{video_id}/snapshot")
+async def get_video_snapshot(
+    video_id: str,
+    time_seconds: float = Query(0, alias="time", ge=0),
+    db: Session = Depends(get_db),
+):
+    """按时间点提取一帧关键截图，生成后缓存在视频目录。"""
+    video = _find_video_for_player(db, video_id, None)
+    video_path = _resolve_local_video_path(video)
+    if not video_path:
+        raise HTTPException(status_code=404, detail="本地视频文件不存在，无法生成截图")
+
+    seconds = max(0, int(time_seconds))
+    output_path = _snapshot_path(video_path, seconds)
+    if not output_path.exists():
+        try:
+            await asyncio.to_thread(_generate_snapshot_sync, video_path, output_path, seconds)
+        except FileNotFoundError:
+            raise HTTPException(status_code=503, detail="ffmpeg 未安装或不在 PATH 中")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"生成截图失败: {exc}")
+
+    return FileResponse(output_path, media_type="image/jpeg")
 
 
 @router.get("/")

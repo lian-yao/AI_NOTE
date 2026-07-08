@@ -35,6 +35,11 @@ export interface AudioMeta {
     title?: string
     start_time?: number
     end_time?: number
+    content?: string
+    chunk_index?: number
+    screenshot_url?: string
+    image_url?: string
+    thumbnail_url?: string
   }>
 }
 

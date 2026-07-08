@@ -1,32 +1,42 @@
 # app/store/chunker.py
 import re
 from typing import List, Dict, Any
+from app.note.timeline import extract_timeline_sections, seconds_from_timestamp
 
 def semantic_chunk(note_markdown: str, min_chunk_size: int = 100, overlap: int = 50) -> List[Dict[str, Any]]:
     """按 ## 标题分割，合并小块，添加重叠"""
+    timeline_sections = extract_timeline_sections(note_markdown)
+    if timeline_sections:
+        return [
+            {
+                "title": section.get("title", f"片段 {index + 1}"),
+                "content": section.get("content") or section.get("title", ""),
+                "start_time": section.get("start_time", 0),
+                "end_time": section.get("end_time", 0),
+            }
+            for index, section in enumerate(timeline_sections)
+        ]
+
     # 按行分割，识别标题
     lines = note_markdown.split("\n")
     chunks = []
     current_chunk = {"title": "", "content": "", "start_time": 0, "end_time": 0}
     # 用于提取时间戳的函数
-    time_pattern = re.compile(r"（(\d+:\d+) - (\d+:\d+)）")
+    time_pattern = re.compile(r"[（(［\[](\d{1,2}:\d{2}(?::\d{2})?)\s*(?:-|~|–|—|至|到)\s*(\d{1,2}:\d{2}(?::\d{2})?)[）)］\]]")
 
     for line in lines:
-        if line.startswith("## "):
+        if line.startswith("## ") or line.startswith("### "):
             # 新章节开始，保存上一个
             if current_chunk["content"]:
                 chunks.append(current_chunk.copy())
             # 提取标题和时间
-            title_text = line[3:].strip()
+            title_text = line.lstrip("#").strip()
             time_match = time_pattern.search(title_text)
             if time_match:
                 title = title_text[:time_match.start()].strip()
                 start_str, end_str = time_match.groups()
-                def to_sec(ts):
-                    parts = ts.split(":")
-                    return int(parts[0])*60 + int(parts[1]) if len(parts)==2 else 0
-                start = to_sec(start_str)
-                end = to_sec(end_str)
+                start = seconds_from_timestamp(start_str)
+                end = seconds_from_timestamp(end_str)
             else:
                 title = title_text
                 start = end = 0

@@ -25,6 +25,7 @@ import {
   Loader2,
   MessageSquare,
   Maximize2,
+  Minimize2,
   Pause,
   PenSquare,
   Play,
@@ -42,21 +43,37 @@ import { cn } from '@/lib/utils'
 import type { Task } from '@/store/taskStore'
 import { useTaskStore } from '@/store/taskStore'
 import { getTaskLogs, type TaskLogItem } from '@/services/task'
-import { resolveVideoPlayer, type VideoPlayerSource } from '@/services/video'
+import { resolveApiMediaUrl, resolveVideoPlayer, type VideoPlayerSource } from '@/services/video'
 import {
   formatDate,
   formatTime,
   getLatestMarkdown,
   getTaskAuthor,
   getTaskCoverUrl,
+  getTaskTimelineSections,
   getTaskTitle,
-  groupSegments,
+  resolveDisplayImageUrl,
 } from './utils'
 import MarkdownRenderer from './components/MarkdownRenderer'
 
 const MarkmapEditor = lazy(() => import('./components/MarkmapComponent'))
 const ChatPanel = lazy(() => import('./components/ChatPanel'))
 type MediaPanelMode = 'video-chat' | 'chat-only'
+
+interface VideoSeekRequest {
+  id: number
+  taskId: string
+  time: number
+}
+
+interface TimelineMarker {
+  key: string
+  title: string
+  content: string
+  time: number
+  endTime: number
+  screenshotUrl: string
+}
 
 interface WorkspaceViewProps {
   task: Task | null
@@ -359,7 +376,9 @@ function StatusBlock({ task }: { task: Task }) {
           {label}
         </p>
         <p className="mt-2 text-sm text-neutral-500">
-          {isFailed ? task.message || '请检查后端日志或稍后重试。' : '任务正在执行，完成后会自动刷新。'}
+          {isFailed
+            ? task.message || '请检查后端日志或稍后重试。'
+            : '任务正在执行，完成后会自动刷新。'}
         </p>
       </div>
       {isFailed && (
@@ -437,6 +456,34 @@ function ChatPanelFallback() {
         <div className="h-10 animate-pulse rounded-xl bg-neutral-800" />
       </div>
     </div>
+  )
+}
+
+function DeepReadingScreenshot({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    setFailed(false)
+  }, [src])
+
+  if (!src || failed) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-xs text-neutral-600">
+        <Video size={22} strokeWidth={1.5} />
+        <span>{src ? '截图暂不可用' : '关键截图待生成'}</span>
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+      className="h-full w-full object-cover"
+    />
   )
 }
 
@@ -583,8 +630,7 @@ function WorkspaceScrollArea({
     }
 
     const thumbTop =
-      metrics.trackPadding +
-      (viewport.scrollTop / metrics.maxScrollTop) * metrics.maxThumbTop
+      metrics.trackPadding + (viewport.scrollTop / metrics.maxScrollTop) * metrics.maxThumbTop
 
     thumb.style.height = `${metrics.thumbHeight}px`
     thumb.style.opacity = '0.72'
@@ -739,19 +785,25 @@ function WorkspaceScrollArea({
   )
 }
 
-function SummaryContent({ task }: { task: Task }) {
+function SummaryContent({
+  task,
+  onSeekToTime,
+}: {
+  task: Task
+  onSeekToTime: (seconds: number) => void
+}) {
   const [activeTab, setActiveTab] = useState<'summary' | 'deep-reading' | 'transcript' | 'mindmap'>(
     'summary'
   )
   const [isEditing, setIsEditing] = useState(false)
   const [editorMode, setEditorMode] = useState<'write' | 'split' | 'preview'>('split')
   const [draftContent, setDraftContent] = useState('')
-  const [expandedGroups, setExpandedGroups] = useState<Record<number, boolean>>({})
+  const [showDeepReadingScreenshots, setShowDeepReadingScreenshots] = useState(true)
   const retryTask = useTaskStore(state => state.retryTask)
   const updateTaskContent = useTaskStore(state => state.updateTaskContent)
   const { content, version } = getLatestMarkdown(task.markdown)
   const segments = useMemo(() => task.transcript?.segments || [], [task.transcript?.segments])
-  const segmentGroups = useMemo(() => groupSegments(segments, 8), [segments])
+  const timelineSections = useMemo(() => getTaskTimelineSections(task, content), [content, task])
   const title = getTaskTitle(task)
   const isPreviewTask = task.formData.provider_id === 'preview'
   const markdownContent = isEditing ? draftContent : content
@@ -838,7 +890,11 @@ function SummaryContent({ task }: { task: Task }) {
     if (!isEditing) {
       return (
         <div className="min-h-full w-full rounded-lg border border-neutral-800/80 bg-[#141416] px-4 py-4 shadow-[0_18px_60px_rgba(0,0,0,0.24)]">
-          <MarkdownRenderer value={content} emptyPlaceholder="暂无总结内容" />
+          <MarkdownRenderer
+            value={content}
+            emptyPlaceholder="暂无总结内容"
+            onSeekTimestamp={onSeekToTime}
+          />
         </div>
       )
     }
@@ -856,7 +912,11 @@ function SummaryContent({ task }: { task: Task }) {
 
     const previewPane = (
       <div className="custom-scrollbar h-full overflow-y-auto rounded-lg border border-neutral-800/80 bg-[#141416] px-5 py-4">
-        <MarkdownRenderer value={draftContent} emptyPlaceholder="预览内容为空" />
+        <MarkdownRenderer
+          value={draftContent}
+          emptyPlaceholder="预览内容为空"
+          onSeekTimestamp={onSeekToTime}
+        />
       </div>
     )
 
@@ -947,7 +1007,7 @@ function SummaryContent({ task }: { task: Task }) {
         <>
           <div className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800/50 bg-[#151515] px-6">
             <div className="flex items-center gap-4 text-sm text-neutral-400">
-              <span>章节 ({segmentGroups.length})</span>
+              <span>章节 ({timelineSections.length})</span>
               {version && <span className="text-xs">版本 {version.ver_id.slice(-6)}</span>}
               {isEditing && (
                 <span
@@ -1045,76 +1105,120 @@ function SummaryContent({ task }: { task: Task }) {
       )}
 
       <div className="relative flex-1 overflow-hidden">
-        <WorkspaceScrollArea
-          active={activeTab === 'summary'}
-          className="pt-2 pr-1 pb-8 pl-2"
-        >
+        <WorkspaceScrollArea active={activeTab === 'summary'} className="pt-2 pr-1 pb-8 pl-2">
           <div className="w-full max-w-none">{renderMarkdownEditor()}</div>
         </WorkspaceScrollArea>
 
-        <WorkspaceScrollArea
-          active={activeTab === 'deep-reading'}
-          className="pt-6 pr-3 pb-20 pl-6"
-        >
-          <div className="mx-auto max-w-3xl space-y-8">
-            <div className="border-b border-neutral-800/50 pb-4">
-              <h2 className="text-lg font-bold text-neutral-100">视频主题: {title}</h2>
-              <p className="mt-2 text-xs text-neutral-500">按真实字幕片段自动分组展示</p>
+        <WorkspaceScrollArea active={activeTab === 'deep-reading'} className="pt-6 pr-3 pb-20 pl-6">
+          <div className="mx-auto max-w-5xl space-y-8">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800/50 pb-4">
+              <div>
+                <h2 className="text-lg font-bold text-neutral-100">视频主题: {title}</h2>
+                <p className="mt-2 text-xs text-neutral-500">
+                  按内容时间块阅读字幕原文，左侧保留对应关键截图
+                </p>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-neutral-400">
+                <span>显示截图</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={showDeepReadingScreenshots}
+                  onClick={() => setShowDeepReadingScreenshots(value => !value)}
+                  className={`relative h-5 w-9 rounded-full transition-colors ${
+                    showDeepReadingScreenshots ? 'bg-neutral-100' : 'bg-neutral-700'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-black transition-transform ${
+                      showDeepReadingScreenshots ? 'translate-x-4' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
-            {segmentGroups.length > 0 ? (
-              segmentGroups.map((group, index) => (
-                <div key={`${group.start}-${index}`} className="mb-8">
-                  <div className="mb-3 flex items-center justify-between gap-4">
-                    <h3 className="flex items-center gap-2 font-medium text-blue-400">
-                      <span className="text-primary font-mono">{formatTime(group.start)}</span>
-                      <span>{group.text.slice(0, 42) || '字幕片段'}</span>
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setExpandedGroups(prev => ({ ...prev, [index]: !prev[index] }))
-                      }
-                      className="shrink-0 text-xs text-neutral-400 transition-colors hover:text-neutral-200"
-                    >
-                      {expandedGroups[index] ? '收起原文' : '展开原文'}
-                    </button>
-                  </div>
-                  <p className="text-sm leading-relaxed text-neutral-300">{group.text}</p>
-                  {expandedGroups[index] && (
-                    <div className="mt-4 rounded-xl border border-neutral-800/80 bg-[#0A0A0A] p-4">
-                      <div className="mb-4 flex items-center gap-2 border-b border-neutral-800 pb-2 text-xs text-neutral-400">
-                        <Subtitles size={14} />
-                        字幕原文
+            {timelineSections.length > 0 ? (
+              timelineSections.map(section => {
+                const relatedSegments = segments.filter(segment => {
+                  if (section.endTime <= section.startTime) {
+                    return segment.start >= section.startTime
+                  }
+                  return segment.end >= section.startTime && segment.start <= section.endTime
+                })
+                const timeLabel =
+                  section.endTime > section.startTime
+                    ? `${formatTime(section.startTime)} - ${formatTime(section.endTime)}`
+                    : formatTime(section.startTime)
+                const screenshotUrl =
+                  resolveTaskImageUrl(section.screenshotUrl, task.audioMeta?.platform) ||
+                  getTaskSnapshotUrl(task, section.startTime)
+
+                return (
+                  <section
+                    key={section.key}
+                    className="grid gap-5 border-b border-neutral-800/45 pb-8 last:border-b-0 lg:grid-cols-[240px_minmax(0,1fr)]"
+                  >
+                    {showDeepReadingScreenshots && (
+                      <div className="lg:pt-1">
+                        <div className="aspect-video overflow-hidden rounded-md border border-neutral-800 bg-[#080808]">
+                          <DeepReadingScreenshot
+                            src={screenshotUrl}
+                            alt={`${section.title} 关键截图`}
+                          />
+                        </div>
                       </div>
-                      <div className="space-y-4">
-                        {group.segments.map(segment => (
-                          <div
-                            key={`${segment.start}-${segment.text}`}
-                            className="flex gap-4 text-sm"
-                          >
-                            <div className="w-14 shrink-0 font-mono text-blue-400">
-                              {formatTime(segment.start)}
-                            </div>
-                            <div className="leading-relaxed text-neutral-400">{segment.text}</div>
-                          </div>
-                        ))}
+                    )}
+
+                    <div className="min-w-0">
+                      <div className="mb-4 flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => onSeekToTime(section.startTime)}
+                          className="text-primary rounded border border-blue-400/25 bg-blue-500/10 px-2 py-0.5 font-mono text-xs transition-colors hover:border-blue-300/60 hover:bg-blue-500/20"
+                          title="跳转到视频位置"
+                        >
+                          {timeLabel}
+                        </button>
+                        <h3 className="min-w-0 flex-1 text-xl font-bold text-neutral-100">
+                          {section.title}
+                        </h3>
+                        <span className="shrink-0 text-xs text-neutral-600">
+                          {relatedSegments.length} 条字幕
+                        </span>
                       </div>
+
+                      {relatedSegments.length > 0 ? (
+                        <div className="space-y-2 text-[15px] leading-7 text-neutral-100">
+                          {relatedSegments.map(segment => (
+                            <button
+                              key={`${segment.start}-${segment.text}`}
+                              type="button"
+                              onClick={() => onSeekToTime(segment.start)}
+                              className="block w-full rounded-md px-2 py-0.5 text-left transition-colors hover:bg-blue-500/10"
+                              title={`跳转到 ${formatTime(segment.start)}`}
+                            >
+                              {segment.text}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-md border border-dashed border-neutral-800 bg-[#0A0A0A] px-4 py-8 text-center text-sm text-neutral-600">
+                          当前时间范围内暂无字幕原文
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))
+                  </section>
+                )
+              })
             ) : (
               <div className="flex h-32 items-center justify-center rounded-xl border border-dashed border-neutral-800 bg-[#1A1A1A] text-sm text-neutral-600">
-                暂无字幕片段
+                当前笔记还没有可用的 AI 时间分块，重新总结后会根据内容整理生成。
               </div>
             )}
           </div>
         </WorkspaceScrollArea>
 
-        <WorkspaceScrollArea
-          active={activeTab === 'transcript'}
-          className="pt-6 pr-3 pb-20 pl-6"
-        >
+        <WorkspaceScrollArea active={activeTab === 'transcript'} className="pt-6 pr-3 pb-20 pl-6">
           <div className="mx-auto max-w-3xl">
             <div className="mb-6 flex items-center justify-between border-b border-neutral-800/50 pb-4">
               <h2 className="text-lg font-bold text-neutral-100">字幕脚本</h2>
@@ -1131,9 +1235,14 @@ function SummaryContent({ task }: { task: Task }) {
               {segments.length > 0 ? (
                 segments.map(segment => (
                   <div key={`${segment.start}-${segment.text}`} className="flex gap-4 text-sm">
-                    <div className="text-primary w-14 shrink-0 font-mono">
+                    <button
+                      type="button"
+                      onClick={() => onSeekToTime(segment.start)}
+                      className="text-primary w-14 shrink-0 text-left font-mono transition-colors hover:text-blue-200"
+                      title="跳转到视频位置"
+                    >
                       {formatTime(segment.start)}
-                    </div>
+                    </button>
                     <div className="leading-relaxed text-neutral-300">{segment.text}</div>
                   </div>
                 ))
@@ -1179,6 +1288,15 @@ function nestedValueFromRecord(value: unknown, parentKey: string, childKey: stri
   return typeof item === 'string' ? item : ''
 }
 
+function resolveTaskImageUrl(rawUrl: string, platform = ''): string {
+  const displayUrl = resolveDisplayImageUrl(rawUrl, platform)
+  if (!displayUrl) return ''
+  if (/^\/(?:api|static)\//i.test(displayUrl)) {
+    return resolveApiMediaUrl(displayUrl)
+  }
+  return displayUrl
+}
+
 function extractBvid(value: string): string {
   return value.match(/BV[0-9A-Za-z]{10}/)?.[0] || ''
 }
@@ -1220,6 +1338,16 @@ function getTaskVideoId(task: Task | null): string {
 
   const bvid = getTaskBvid(task)
   return bvid ? `b_${bvid}` : ''
+}
+
+function getTaskSnapshotUrl(task: Task | null, seconds: number | undefined): string {
+  const videoId = getTaskVideoId(task)
+  if (!videoId) return ''
+
+  const safeSeconds = Math.max(0, Math.floor(Number.isFinite(seconds) ? Number(seconds) : 0))
+  return resolveApiMediaUrl(
+    `/api/v1/videos/${encodeURIComponent(videoId)}/snapshot?time=${safeSeconds}`
+  )
 }
 
 function getTaskBvid(task: Task | null): string {
@@ -1283,16 +1411,39 @@ function formatPlayerTime(value: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
+function getTimedEmbedUrl(value: string, seconds: number, autoplay = true): string {
+  const safeSeconds = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0))
+
+  try {
+    const base =
+      typeof window === 'undefined' ? 'https://player.bilibili.com/' : window.location.href
+    const url = new URL(value, base)
+    url.searchParams.set('t', String(safeSeconds))
+    if (autoplay) url.searchParams.set('autoplay', '1')
+    return url.toString()
+  } catch {
+    const separator = value.includes('?') ? '&' : '?'
+    const autoplayParam = autoplay ? '&autoplay=1' : ''
+    return `${value}${separator}t=${safeSeconds}${autoplayParam}`
+  }
+}
+
 function TaskVideoPlayer({
   task,
   title,
   coverUrl,
+  seekRequest,
 }: {
   task: Task
   title: string
   coverUrl: string
+  seekRequest?: VideoSeekRequest | null
 }) {
+  const playerHostRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const pendingSeekRef = useRef<number | null>(null)
+  const timelineTrackRef = useRef<HTMLDivElement>(null)
+  const subtitleDragRef = useRef<{ pointerId: number } | null>(null)
   const [playerSource, setPlayerSource] = useState<VideoPlayerSource | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -1302,40 +1453,158 @@ function TaskVideoPlayer({
   const [duration, setDuration] = useState(0)
   const [playbackRate, setPlaybackRate] = useState(1)
   const [subtitlesVisible, setSubtitlesVisible] = useState(true)
+  const [subtitlePosition, setSubtitlePosition] = useState({ x: 50, y: 76 })
+  const [subtitleDragging, setSubtitleDragging] = useState(false)
+  const [controlsVisible, setControlsVisible] = useState(true)
+  const [controlInteractionKey, setControlInteractionKey] = useState(0)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [hoveredTimelineMarker, setHoveredTimelineMarker] = useState<
+    (TimelineMarker & { left: number }) | null
+  >(null)
+  const [embedSeekRequest, setEmbedSeekRequest] = useState<{
+    id: number
+    time: number
+    autoplay: boolean
+  } | null>(null)
   const sourceUrl = getTaskSourceUrl(task)
   const videoId = getTaskVideoId(task)
   const fallbackEmbedUrl = getTaskEmbedUrl(task)
   const embedUrl = playerSource?.embed_url || fallbackEmbedUrl
+  const iframeSrc = useMemo(
+    () =>
+      embedSeekRequest && embedUrl
+        ? getTimedEmbedUrl(embedUrl, embedSeekRequest.time, embedSeekRequest.autoplay)
+        : embedUrl,
+    [embedSeekRequest, embedUrl]
+  )
   const posterUrl = playerSource?.cover_url || coverUrl
   const streamUrl = playerSource?.local_stream_url || playerSource?.stream_url || ''
   const quality = task.formData?.quality || '1080p'
   const segments = useMemo(() => task.transcript?.segments || [], [task.transcript?.segments])
   const knownDuration = duration || playerSource?.duration_seconds || task.audioMeta?.duration || 0
+  const markdownContent = useMemo(() => getLatestMarkdown(task.markdown).content, [task.markdown])
   const activeSegment = useMemo(() => {
-    return segments.find(segment => currentTime >= segment.start && currentTime < segment.end) || null
+    return (
+      segments.find(segment => currentTime >= segment.start && currentTime < segment.end) || null
+    )
   }, [currentTime, segments])
-  const timelineMarkers = useMemo(() => {
-    const chapters = task.audioMeta?.chapters || []
-    if (chapters.length > 0) {
-      return chapters
-        .map((chapter, index) => ({
-          key: `chapter-${index}`,
-          title: chapter.title || `章节 ${index + 1}`,
-          time: Number(chapter.start_time || 0),
-        }))
-        .filter(marker => marker.time >= 0)
-    }
+  const timelineMarkers = useMemo<TimelineMarker[]>(() => {
+    return getTaskTimelineSections(task, markdownContent).map((section, index) => ({
+      key: section.key || `section-${index}`,
+      title: section.title,
+      content: section.content,
+      time: section.startTime,
+      endTime: section.endTime,
+      screenshotUrl:
+        resolveTaskImageUrl(section.screenshotUrl, task.audioMeta?.platform) ||
+        getTaskSnapshotUrl(task, section.startTime),
+    }))
+  }, [markdownContent, task])
+  const timelineDuration = useMemo(() => {
+    const lastMarkerTime = timelineMarkers.reduce(
+      (max, marker) => Math.max(max, marker.endTime || marker.time),
+      0
+    )
+    return Math.max(knownDuration, lastMarkerTime, currentTime, 1)
+  }, [currentTime, knownDuration, timelineMarkers])
 
-    return segments
-      .filter((_, index) => index % 8 === 0)
-      .slice(0, 28)
-      .map((segment, index) => ({
-        key: `segment-${index}`,
-        title: segment.text,
-        time: segment.start,
-      }))
-  }, [segments, task.audioMeta?.chapters])
+  const handleTimelinePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (timelineMarkers.length === 0) {
+        setHoveredTimelineMarker(null)
+        return
+      }
+
+      const rect = event.currentTarget.getBoundingClientRect()
+      if (rect.width <= 0) return
+
+      const left = Math.min(100, Math.max(0, ((event.clientX - rect.left) / rect.width) * 100))
+      const hoveredTime = (left / 100) * timelineDuration
+      const hoverGraceSeconds = Math.max(4, timelineDuration * 0.008)
+      let nextMarker: TimelineMarker | null = null
+      let nextDistance = Number.POSITIVE_INFINITY
+
+      for (const marker of timelineMarkers) {
+        const start = marker.time
+        const end = Math.max(marker.endTime || marker.time, marker.time)
+        const distance =
+          hoveredTime < start ? start - hoveredTime : hoveredTime > end ? hoveredTime - end : 0
+
+        if (distance < nextDistance) {
+          nextMarker = marker
+          nextDistance = distance
+        }
+      }
+
+      if (!nextMarker || nextDistance > hoverGraceSeconds) {
+        setHoveredTimelineMarker(null)
+        return
+      }
+
+      setHoveredTimelineMarker(previous => {
+        if (previous?.key === nextMarker?.key && Math.abs(previous.left - left) < 0.25) {
+          return previous
+        }
+        return {
+          ...nextMarker,
+          left,
+        }
+      })
+    },
+    [timelineDuration, timelineMarkers]
+  )
+
+  const showControls = useCallback(() => {
+    setControlsVisible(true)
+    setControlInteractionKey(value => value + 1)
+  }, [])
+
+  const updateSubtitlePosition = useCallback((clientX: number, clientY: number) => {
+    const host = playerHostRef.current
+    if (!host) return
+
+    const rect = host.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+
+    const x = Math.min(90, Math.max(10, ((clientX - rect.left) / rect.width) * 100))
+    const y = Math.min(84, Math.max(16, ((clientY - rect.top) / rect.height) * 100))
+    setSubtitlePosition({ x, y })
+  }, [])
+
+  const handleSubtitlePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+      subtitleDragRef.current = { pointerId: event.pointerId }
+      event.currentTarget.setPointerCapture(event.pointerId)
+      setSubtitleDragging(true)
+      showControls()
+      updateSubtitlePosition(event.clientX, event.clientY)
+    },
+    [showControls, updateSubtitlePosition]
+  )
+
+  const handleSubtitlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (subtitleDragRef.current?.pointerId !== event.pointerId) return
+      event.preventDefault()
+      event.stopPropagation()
+      updateSubtitlePosition(event.clientX, event.clientY)
+    },
+    [updateSubtitlePosition]
+  )
+
+  const handleSubtitlePointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (subtitleDragRef.current?.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+    subtitleDragRef.current = null
+    setSubtitleDragging(false)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1346,6 +1615,7 @@ function TaskVideoPlayer({
     setCurrentTime(0)
     setDuration(0)
     setPlaying(false)
+    setEmbedSeekRequest(null)
 
     if (!sourceUrl) {
       setError('当前笔记缺少视频链接')
@@ -1363,7 +1633,13 @@ function TaskVideoPlayer({
         if (cancelled) return
         setPlayerSource(data)
         const hasNativeSource = Boolean(data.local_stream_url || data.stream_url)
-        setPlayerMode(hasNativeSource ? 'native' : 'embed')
+        setPlayerMode(currentMode =>
+          currentMode === 'embed' && (data.embed_url || fallbackEmbedUrl)
+            ? 'embed'
+            : hasNativeSource
+              ? 'native'
+              : 'embed'
+        )
         if (!hasNativeSource && !(data.embed_url || fallbackEmbedUrl)) {
           setError('暂无可播放视频源')
         }
@@ -1388,6 +1664,29 @@ function TaskVideoPlayer({
     video.playbackRate = playbackRate
   }, [playbackRate, streamUrl])
 
+  useEffect(() => {
+    if (!playing || subtitleDragging) {
+      setControlsVisible(true)
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      setControlsVisible(false)
+    }, 2200)
+
+    return () => window.clearTimeout(timer)
+  }, [playing, subtitleDragging, controlInteractionKey])
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(document.fullscreenElement === playerHostRef.current)
+    }
+
+    syncFullscreenState()
+    document.addEventListener('fullscreenchange', syncFullscreenState)
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState)
+  }, [])
+
   const handleRetry = () => {
     setReloadKey(value => value + 1)
   }
@@ -1402,16 +1701,54 @@ function TaskVideoPlayer({
     }
   }
 
-  const seekTo = (value: number) => {
-    const video = videoRef.current
-    if (!video) return
-    video.currentTime = value
-    setCurrentTime(value)
-  }
+  const seekEmbedTo = useCallback((value: number, autoplay = true) => {
+    const safeValue = Math.max(0, Number.isFinite(value) ? value : 0)
+    setEmbedSeekRequest(prev => ({
+      id: (prev?.id || 0) + 1,
+      time: safeValue,
+      autoplay,
+    }))
+    setCurrentTime(safeValue)
+    return true
+  }, [])
 
-  const requestFullscreen = () => {
-    const host = videoRef.current?.parentElement
-    if (host?.requestFullscreen) {
+  const seekTo = useCallback(
+    (value: number, autoplay = false) => {
+      const safeValue = Math.max(0, Number.isFinite(value) ? value : 0)
+      if (playerMode === 'embed' && embedUrl) {
+        return seekEmbedTo(safeValue, autoplay)
+      }
+
+      const video = videoRef.current
+      if (!video) {
+        if (!streamUrl && embedUrl) {
+          setPlayerMode('embed')
+          return seekEmbedTo(safeValue, autoplay)
+        }
+
+        pendingSeekRef.current = safeValue
+        return false
+      }
+      video.currentTime = safeValue
+      setCurrentTime(safeValue)
+      if (autoplay) {
+        void video.play().catch(() => {})
+      }
+      return true
+    },
+    [embedUrl, playerMode, seekEmbedTo, streamUrl]
+  )
+
+  const toggleFullscreen = () => {
+    const host = playerHostRef.current
+    if (!host) return
+
+    if (document.fullscreenElement === host) {
+      void document.exitFullscreen?.()
+      return
+    }
+
+    if (host.requestFullscreen) {
       void host.requestFullscreen()
     }
   }
@@ -1421,35 +1758,91 @@ function TaskVideoPlayer({
   const canShowEmbed = playerMode === 'embed' && canUseEmbed
   const canShowVideo = playerMode === 'native' && canUseNative
 
+  useEffect(() => {
+    if (!seekRequest) return
+    if (seekRequest.taskId !== task.id) return
+
+    const jumped = seekTo(seekRequest.time, true)
+    if (!jumped && !streamUrl && !embedUrl && !loading) {
+      toast.error('当前播放器源暂不支持从笔记时间戳直接跳转')
+    }
+  }, [embedUrl, loading, seekRequest, seekTo, streamUrl, task.id])
+
+  useEffect(() => {
+    if (!canShowVideo || pendingSeekRef.current == null) return
+
+    const target = pendingSeekRef.current
+    const timer = window.setTimeout(() => {
+      if (seekTo(target, true)) {
+        pendingSeekRef.current = null
+      }
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [canShowVideo, seekRequest?.id, seekTo, streamUrl])
+
   return (
-    <div className="relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black">
-      <div className="absolute top-3 left-3 z-20 flex items-center gap-1 rounded-full bg-black/70 p-1 text-xs text-neutral-200 backdrop-blur-sm">
+    <div
+      ref={playerHostRef}
+      onPointerMove={showControls}
+      onPointerLeave={() => {
+        if (playing && !subtitleDragging) setControlsVisible(false)
+      }}
+      onFocusCapture={showControls}
+      className="workspace-video-player relative aspect-video shrink-0 overflow-hidden border-b border-neutral-800 bg-black"
+    >
+      <div
+        className={`absolute top-3 right-3 z-30 rounded-full border border-white/10 bg-black/38 p-1 text-xs text-neutral-200 shadow-2xl backdrop-blur-md transition-all duration-300 ${
+          controlsVisible || !playing
+            ? 'translate-y-0 opacity-100'
+            : 'pointer-events-none -translate-y-2 opacity-0'
+        }`}
+      >
+        <div className="relative grid w-[138px] grid-cols-2">
+          <span
+            aria-hidden
+            className="absolute top-0 bottom-0 left-0 w-1/2 rounded-full bg-white shadow-[0_5px_18px_rgba(255,255,255,0.18)] transition-transform duration-300 ease-out"
+            style={{
+              transform: playerMode === 'embed' ? 'translateX(100%)' : 'translateX(0)',
+            }}
+          />
         <button
           type="button"
           onClick={() => setPlayerMode('native')}
           disabled={!canUseNative}
-          className={`rounded-full px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-            playerMode === 'native' ? 'bg-neutral-100 text-neutral-950' : 'hover:bg-neutral-800'
+          aria-pressed={playerMode === 'native'}
+          className={`relative z-10 flex h-7 items-center justify-center gap-1 rounded-full px-2 transition-colors duration-300 disabled:cursor-not-allowed disabled:opacity-35 ${
+            playerMode === 'native'
+              ? 'text-neutral-950'
+              : 'text-neutral-300 hover:text-white'
           }`}
+          title="使用本地播放器"
         >
-          本地
+          <Video size={13} />
+          <span>本地</span>
         </button>
         <button
           type="button"
           onClick={() => setPlayerMode('embed')}
           disabled={!canUseEmbed}
-          className={`rounded-full px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-            playerMode === 'embed' ? 'bg-neutral-100 text-neutral-950' : 'hover:bg-neutral-800'
+          aria-pressed={playerMode === 'embed'}
+          className={`relative z-10 flex h-7 items-center justify-center gap-1 rounded-full px-2 transition-colors duration-300 disabled:cursor-not-allowed disabled:opacity-35 ${
+            playerMode === 'embed'
+              ? 'text-neutral-950'
+              : 'text-neutral-300 hover:text-white'
           }`}
+          title="使用 B 站播放器"
         >
-          B站
+          <ExternalLink size={13} />
+          <span>B站</span>
         </button>
+        </div>
       </div>
 
       {canShowEmbed ? (
         <iframe
-          key={embedUrl}
-          src={embedUrl}
+          key={`${iframeSrc}-${embedSeekRequest?.id || 0}`}
+          src={iframeSrc}
           title={title}
           allow="autoplay; fullscreen; picture-in-picture"
           allowFullScreen
@@ -1485,7 +1878,7 @@ function TaskVideoPlayer({
             <button
               type="button"
               onClick={togglePlay}
-              className="absolute left-1/2 top-1/2 z-10 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
+              className="absolute top-1/2 left-1/2 z-10 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
               aria-label="播放"
             >
               <Play size={30} fill="currentColor" />
@@ -1493,39 +1886,122 @@ function TaskVideoPlayer({
           )}
 
           {subtitlesVisible && activeSegment && (
-            <div className="pointer-events-none absolute inset-x-6 bottom-20 z-10 flex justify-center">
-              <div className="max-w-full rounded-lg bg-black/72 px-3 py-2 text-center text-sm leading-relaxed text-white shadow-2xl backdrop-blur-sm">
-                {activeSegment.text}
-              </div>
+            <div
+              onPointerDown={handleSubtitlePointerDown}
+              onPointerMove={handleSubtitlePointerMove}
+              onPointerUp={handleSubtitlePointerEnd}
+              onPointerCancel={handleSubtitlePointerEnd}
+              className={`absolute z-20 max-w-[min(86%,760px)] select-none rounded-lg border px-3 py-2 text-center text-sm leading-relaxed text-white shadow-2xl backdrop-blur-sm transition-[border-color,background-color,box-shadow] ${
+                subtitleDragging
+                  ? 'cursor-grabbing border-sky-300/70 bg-black/82 shadow-sky-500/20'
+                  : 'cursor-grab border-white/10 bg-black/68 hover:border-white/24'
+              }`}
+              style={{
+                left: `${subtitlePosition.x}%`,
+                top: `${subtitlePosition.y}%`,
+                transform: 'translate(-50%, -50%)',
+              }}
+              title="拖动字幕位置"
+            >
+              {activeSegment.text}
             </div>
           )}
 
-          <div className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-3 pb-3 pt-12">
-            <div className="relative mb-2 h-5">
-              <div className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/18" />
-              {knownDuration > 0 &&
+          <div
+            className={`absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/90 via-black/65 to-transparent px-3 pt-14 pb-3 transition-all duration-300 ${
+              controlsVisible || !playing || subtitleDragging
+                ? 'translate-y-0 opacity-100'
+                : 'pointer-events-none translate-y-4 opacity-0'
+            }`}
+          >
+            <div
+              ref={timelineTrackRef}
+              onPointerMove={handleTimelinePointerMove}
+              onPointerLeave={() => setHoveredTimelineMarker(null)}
+              className="relative mb-2 h-8"
+            >
+              <div className="pointer-events-none absolute top-[14px] right-0 left-0 h-[3px] -translate-y-1/2 rounded-sm bg-white/16" />
+              {timelineMarkers.length > 0 &&
                 timelineMarkers.map(marker => {
-                  const left = Math.min(100, Math.max(0, (marker.time / knownDuration) * 100))
+                  const left = Math.min(100, Math.max(0, (marker.time / timelineDuration) * 100))
+                  const right = Math.min(
+                    100,
+                    Math.max(left, ((marker.endTime || marker.time) / timelineDuration) * 100)
+                  )
+                  const width = Math.max(0.35, right - left)
+                  const isHovered = hoveredTimelineMarker?.key === marker.key
                   return (
-                    <button
+                    <div
                       key={marker.key}
-                      type="button"
-                      onClick={() => seekTo(marker.time)}
-                      className="absolute top-1/2 z-10 h-3 w-1 -translate-y-1/2 rounded-full bg-emerald-300/80 transition-transform hover:scale-y-125"
-                      style={{ left: `${left}%` }}
-                      title={`${formatPlayerTime(marker.time)} ${marker.title}`}
-                      aria-label={`跳转到 ${formatPlayerTime(marker.time)}`}
+                      className={`pointer-events-none absolute top-[14px] z-0 h-[3px] -translate-y-1/2 rounded-sm transition-colors ${
+                        isHovered ? 'bg-white/55' : 'bg-white/28'
+                      }`}
+                      style={{
+                        left: `calc(${left}% + 2px)`,
+                        width: `max(2px, calc(${width}% - 4px))`,
+                      }}
+                      aria-hidden
                     />
                   )
                 })}
+              <div
+                className="pointer-events-none absolute top-[14px] left-0 z-10 h-[3px] -translate-y-1/2 rounded-sm bg-sky-400"
+                style={{
+                  width: `${Math.min(100, Math.max(0, (currentTime / timelineDuration) * 100))}%`,
+                }}
+              />
+              {hoveredTimelineMarker && (
+                <>
+                  <div
+                    className="pointer-events-none absolute top-[20px] z-30 h-0 w-0 -translate-x-1/2 border-x-[5px] border-t-[6px] border-x-transparent border-t-sky-300"
+                    style={{ left: `${hoveredTimelineMarker.left}%` }}
+                    aria-hidden
+                  />
+                  <div
+                    className="pointer-events-none absolute bottom-10 z-40 w-52 overflow-hidden rounded-md border border-black/70 bg-[#101010]/98 text-left shadow-2xl backdrop-blur"
+                    style={{
+                      left: `${hoveredTimelineMarker.left}%`,
+                      transform:
+                        hoveredTimelineMarker.left < 12
+                          ? 'translateX(0)'
+                          : hoveredTimelineMarker.left > 88
+                            ? 'translateX(-100%)'
+                            : 'translateX(-50%)',
+                    }}
+                  >
+                    <div className="relative aspect-video bg-black">
+                      <DeepReadingScreenshot
+                        src={hoveredTimelineMarker.screenshotUrl}
+                        alt={`${hoveredTimelineMarker.title} 预览截图`}
+                      />
+                      <div className="absolute right-1.5 bottom-1.5 rounded bg-black/78 px-1.5 py-0.5 font-mono text-[11px] text-white">
+                        {formatPlayerTime(hoveredTimelineMarker.time)}
+                        {hoveredTimelineMarker.endTime > hoveredTimelineMarker.time
+                          ? ` - ${formatPlayerTime(hoveredTimelineMarker.endTime)}`
+                          : ''}
+                      </div>
+                    </div>
+                    <div className="space-y-1 px-2.5 py-2">
+                      <div className="line-clamp-1 text-xs font-semibold text-neutral-100">
+                        {hoveredTimelineMarker.title}
+                      </div>
+                      {hoveredTimelineMarker.content && (
+                        <div className="line-clamp-2 text-[11px] leading-4 text-neutral-400">
+                          {hoveredTimelineMarker.content}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
               <input
                 type="range"
                 min={0}
-                max={Math.max(knownDuration, currentTime, 1)}
+                max={timelineDuration}
                 step={0.1}
                 value={currentTime}
                 onChange={event => seekTo(Number(event.target.value))}
-                className="absolute inset-x-0 top-1/2 h-5 -translate-y-1/2 cursor-pointer appearance-none bg-transparent accent-emerald-300"
+                className="workspace-timeline-range absolute inset-x-0 top-[14px] z-30 h-7 -translate-y-1/2 cursor-pointer bg-transparent"
                 aria-label="视频进度"
               />
             </div>
@@ -1536,7 +2012,11 @@ function TaskVideoPlayer({
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 transition-colors hover:bg-white/20"
                 aria-label={playing ? '暂停' : '播放'}
               >
-                {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+                {playing ? (
+                  <Pause size={16} fill="currentColor" />
+                ) : (
+                  <Play size={16} fill="currentColor" />
+                )}
               </button>
               <span className="min-w-[74px] font-mono text-[11px] text-neutral-200">
                 {formatPlayerTime(currentTime)} / {formatPlayerTime(knownDuration)}
@@ -1548,7 +2028,9 @@ function TaskVideoPlayer({
                     type="button"
                     onClick={() => setPlaybackRate(rate)}
                     className={`rounded-md px-2 py-1 text-[11px] transition-colors ${
-                      playbackRate === rate ? 'bg-white text-black' : 'bg-white/10 hover:bg-white/20'
+                      playbackRate === rate
+                        ? 'bg-white text-black'
+                        : 'bg-white/10 hover:bg-white/20'
                     }`}
                   >
                     {rate}x
@@ -1567,12 +2049,12 @@ function TaskVideoPlayer({
                 </button>
                 <button
                   type="button"
-                  onClick={requestFullscreen}
+                  onClick={toggleFullscreen}
                   className="flex h-7 w-7 items-center justify-center rounded-md bg-white/10 transition-colors hover:bg-white/20"
-                  title="全屏"
-                  aria-label="全屏"
+                  title={isFullscreen ? '退出全屏' : '全屏'}
+                  aria-label={isFullscreen ? '退出全屏' : '全屏'}
                 >
-                  <Maximize2 size={15} />
+                  {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
                 </button>
               </div>
             </div>
@@ -1605,17 +2087,9 @@ function TaskVideoPlayer({
       )}
 
       {loading && (canShowVideo || canShowEmbed) && (
-        <div className="absolute top-3 left-3 flex items-center gap-2 rounded-full bg-black/70 px-2.5 py-1 text-xs text-neutral-100 backdrop-blur-sm">
+        <div className="absolute top-14 left-3 z-30 flex items-center gap-2 rounded-full bg-black/70 px-2.5 py-1 text-xs text-neutral-100 backdrop-blur-sm">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           解析中
-        </div>
-      )}
-
-      {!loading && (playerSource?.height || playerSource?.ext) && !canShowEmbed && (
-        <div className="absolute top-3 left-[108px] z-20 rounded-full bg-black/70 px-2.5 py-1 text-xs text-neutral-100 backdrop-blur-sm">
-          {[playerSource.height ? `${playerSource.height}p` : '', playerSource.ext?.toUpperCase()]
-            .filter(Boolean)
-            .join(' · ')}
         </div>
       )}
 
@@ -1624,7 +2098,7 @@ function TaskVideoPlayer({
           href={sourceUrl}
           target="_blank"
           rel="noreferrer"
-          className="absolute top-3 right-3 flex h-8 w-8 items-center justify-center rounded-full bg-black/70 text-neutral-200 backdrop-blur-sm transition-colors hover:bg-neutral-800 hover:text-white"
+          className="absolute top-3 left-3 z-30 flex h-8 w-8 items-center justify-center rounded-full bg-black/70 text-neutral-200 backdrop-blur-sm transition-colors hover:bg-neutral-800 hover:text-white"
           title="打开原视频"
           aria-label="打开原视频"
         >
@@ -1669,11 +2143,13 @@ function VideoChatPanel({
   mode,
   onModeChange,
   onSwapPanels,
+  seekRequest,
 }: {
   task: Task | null
   mode: MediaPanelMode
   onModeChange: (mode: MediaPanelMode) => void
   onSwapPanels: () => void
+  seekRequest?: VideoSeekRequest | null
 }) {
   const [chatReadyToLoad, setChatReadyToLoad] = useState(false)
   const coverUrl = getTaskCoverUrl(task)
@@ -1765,7 +2241,12 @@ function VideoChatPanel({
     <div className="flex h-full flex-col bg-[#111111]">
       {showVideoArea && (
         <>
-          <TaskVideoPlayer task={task} title={title} coverUrl={coverUrl} />
+          <TaskVideoPlayer
+            task={task}
+            title={title}
+            coverUrl={coverUrl}
+            seekRequest={seekRequest}
+          />
 
           <div className="shrink-0 border-b border-neutral-800 p-4">
             <div className="mb-2 flex items-center justify-between gap-4">
@@ -1849,6 +2330,7 @@ export default function WorkspaceView({
   const [previewActiveTaskId, setPreviewActiveTaskId] = useState(PREVIEW_TASKS[0]?.id || '')
   const [mediaPanelMode, setMediaPanelMode] = useState<MediaPanelMode>('video-chat')
   const [panelsSwapped, setPanelsSwapped] = useState(false)
+  const [videoSeekRequest, setVideoSeekRequest] = useState<VideoSeekRequest | null>(null)
   const splitDirection = useWorkspaceSplitDirection()
   const isVerticalSplit = splitDirection === 'vertical'
   const hasRealTabs = openTasks.length > 0
@@ -1908,6 +2390,19 @@ export default function WorkspaceView({
     onCloseTask(taskId)
   }
 
+  const handleSeekToTime = useCallback(
+    (seconds: number) => {
+      if (!Number.isFinite(seconds) || !visibleTask) return
+      setMediaPanelMode('video-chat')
+      setVideoSeekRequest(prev => ({
+        id: (prev?.id || 0) + 1,
+        taskId: visibleTask.id,
+        time: Math.max(0, seconds),
+      }))
+    },
+    [visibleTask]
+  )
+
   const renderWorkspacePanel = (order: number) => (
     <ResizablePanel
       id="workspace"
@@ -1918,7 +2413,7 @@ export default function WorkspaceView({
     >
       <div className="flex h-full min-w-0 flex-col bg-[#111111]">
         {visibleTask ? (
-          <SummaryContent key={visibleTask.id} task={visibleTask} />
+          <SummaryContent key={visibleTask.id} task={visibleTask} onSeekToTime={handleSeekToTime} />
         ) : (
           <EmptyWorkspace
             onNewTask={onNewTask}
@@ -1943,6 +2438,7 @@ export default function WorkspaceView({
           mode={mediaPanelMode}
           onModeChange={setMediaPanelMode}
           onSwapPanels={() => setPanelsSwapped(prev => !prev)}
+          seekRequest={videoSeekRequest}
         />
       </div>
     </ResizablePanel>

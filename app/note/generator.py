@@ -1,8 +1,8 @@
 # app/note/generator.py
-import re
-from typing import List, Dict, Any
+from typing import Dict, Any
 from app.llm.client import get_llm_client
 from app.core.logger import logger
+from app.note.timeline import extract_timeline_sections
 
 class NoteGenerator:
     """笔记生成器，将转录文本转化为结构化 Markdown 笔记。"""
@@ -22,7 +22,7 @@ class NoteGenerator:
 ## 核心要求
 1. 忠实原文：只基于转写文本中的内容
 2. 结构化：识别视频自然语义分段，按章节整理
-3. 时间标注：每个章节标注起止时间（格式 MM:SS - MM:SS）
+3. 时间标注：每个章节标注真实起止时间（格式 MM:SS - MM:SS），必须复制转写文本行首的时间范围；不得猜测、改写或凭空生成时间
 4. 完整性：覆盖所有重要知识点
 5. 客观性：保持中立语气
 
@@ -36,9 +36,9 @@ class NoteGenerator:
 - 关键词1
 - 关键词2
 
-## 内容整理
+## 内容分块
 ### 章节一：{标题}（MM:SS - MM:SS）
-{内容整理}
+用 1-3 句话总结该时间块的核心内容，并保留关键细节。
 
 ## 核心观点总结
 1. ...
@@ -58,7 +58,7 @@ class NoteGenerator:
 ## 转写文本
 {transcript_text}
 
-请按上述要求生成 Markdown 笔记。"""
+请按上述要求生成 Markdown 笔记。内容分块必须按转写文本的先后顺序覆盖主要内容；如果转写文本行首包含 [开始 - 结束]，章节时间只能使用这些已有时间边界。"""
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -75,7 +75,7 @@ class NoteGenerator:
         return parsed
 
     def _parse_markdown(self, markdown: str) -> Dict[str, Any]:
-        """从 Markdown 中提取摘要、关键词和章节（二级标题）"""
+        """从 Markdown 中提取摘要、关键词和带时间范围的章节。"""
         # 简易解析（实际生产可考虑使用 markdown 库）
         lines = markdown.split("\n")
         summary = ""
@@ -95,32 +95,14 @@ class NoteGenerator:
                 in_summary = False
                 in_keywords = True
                 continue
-            elif line.startswith("## 内容整理"):
+            elif line.startswith("## 内容整理") or line.startswith("## 内容分块"):
                 in_summary = False
                 in_keywords = False
                 continue
             elif line.startswith("###"):
-                # 章节标题，格式：### 章节名（MM:SS - MM:SS）
                 if current_section:
                     sections.append(current_section)
-                title_match = re.match(r"### (.+)（(\d+:\d+) - (\d+:\d+)）", line)
-                if title_match:
-                    title = title_match.group(1).strip()
-                    start_str = title_match.group(2)
-                    end_str = title_match.group(3)
-                    # 将 MM:SS 转为秒数
-                    def to_seconds(ts):
-                        parts = ts.split(":")
-                        if len(parts) == 2:
-                            return int(parts[0])*60 + int(parts[1])
-                        else:
-                            return 0
-                    start = to_seconds(start_str)
-                    end = to_seconds(end_str)
-                    current_section = {"title": title, "start_time": start, "end_time": end, "content": ""}
-                else:
-                    # 可能标题格式不标准，直接当作标题处理
-                    current_section = {"title": line.replace("###", "").strip(), "start_time": 0, "end_time": 0, "content": ""}
+                current_section = {"title": line.replace("###", "").strip(), "start_time": 0, "end_time": 0, "content": ""}
             elif in_summary:
                 if line and not line.startswith("##"):
                     summary += line + "\n"
@@ -134,6 +116,10 @@ class NoteGenerator:
 
         if current_section:
             sections.append(current_section)
+
+        timeline_sections = extract_timeline_sections(markdown)
+        if timeline_sections:
+            sections = timeline_sections
 
         return {
             "summary": summary.strip(),

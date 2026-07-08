@@ -495,6 +495,11 @@ function TaskCard({
   const author = getTaskAuthor(task) || task.formData.platform
   const duration = formatTime(task.audioMeta?.duration || 0)
   const createdAt = formatDate(task.createdAt)
+  const [coverFailed, setCoverFailed] = useState(false)
+
+  useEffect(() => {
+    setCoverFailed(false)
+  }, [coverUrl])
 
   return (
     <div
@@ -504,11 +509,12 @@ function TaskCard({
       onClick={onSelect}
     >
       <div className="relative aspect-video overflow-hidden rounded-t-2xl border-b border-neutral-800/50 bg-black">
-        {coverUrl ? (
+        {coverUrl && !coverFailed ? (
           <img
             src={coverUrl}
             alt={title}
             referrerPolicy="no-referrer"
+            onError={() => setCoverFailed(true)}
             className="h-full w-full object-cover opacity-80 transition-transform duration-500 group-hover:scale-105"
           />
         ) : (
