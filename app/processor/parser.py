@@ -152,7 +152,17 @@ async def parse_bilibili_url(
     # 处理 playlist 情况
     if info.get("_type") == "playlist" and info.get("entries"):
         entries = info["entries"]
-        info = entries[0] if entries else info
+        # 尝试通过 p 参数匹配具体分P
+        import urllib.parse
+        parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        try:
+            target_p = int((parsed_qs.get("p") or ["1"])[0])
+        except (ValueError, IndexError):
+            target_p = 1
+        if 1 <= target_p <= len(entries):
+            info = entries[target_p - 1]
+        else:
+            info = entries[0] if entries else info
 
     title = info.get("title", "未知标题")
     uploader = info.get("uploader") or info.get("channel") or ""
@@ -164,6 +174,15 @@ async def parse_bilibili_url(
     resolved_avid = avid or _extract_avid(info.get("webpage_url", "") or info.get("original_url", "") or "")
 
     video_id = _build_video_id(resolved_bvid, resolved_avid)
+    if (resolved_bvid or resolved_avid) and "p=" in url:
+        import urllib.parse
+        parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        try:
+            p_val = int((parsed_qs.get("p") or ["1"])[0])
+            if p_val > 1:
+                video_id = f"{video_id}_p{p_val}"
+        except (ValueError, IndexError):
+            pass
 
     # =========================================================================
     # 备用降级逻辑（yt-dlp 不可用时启用）：

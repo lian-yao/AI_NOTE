@@ -325,6 +325,7 @@ function StatusBlock({ task }: { task: Task }) {
   const label = statusLabel[task.status] || task.status
   const [logs, setLogs] = useState<TaskLogItem[]>([])
   const retryTask = useTaskStore(state => state.retryTask)
+  const cancelTask = useTaskStore(state => state.cancelTask)
 
   useEffect(() => {
     if (isSuccess) return
@@ -361,6 +362,16 @@ function StatusBlock({ task }: { task: Task }) {
         <p className="mt-2 text-sm text-neutral-500">
           {isFailed ? task.message || '请检查后端日志或稍后重试。' : '任务正在执行，完成后会自动刷新。'}
         </p>
+        {!isFailed && (
+          <button
+            type="button"
+            onClick={() => cancelTask(task.id)}
+            className="mt-4 flex items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-800/50 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-neutral-700/50"
+          >
+            <X size={15} />
+            取消任务
+          </button>
+        )}
       </div>
       {isFailed && (
         <button
@@ -1319,12 +1330,18 @@ function TaskVideoPlayer({
     const chapters = task.audioMeta?.chapters || []
     if (chapters.length > 0) {
       return chapters
-        .map((chapter, index) => ({
-          key: `chapter-${index}`,
-          title: chapter.title || `章节 ${index + 1}`,
-          time: Number(chapter.start_time || 0),
-        }))
-        .filter(marker => marker.time >= 0)
+        .flatMap((chapter, index) => {
+          const start = Number(chapter.start_time ?? 0)
+          const end = Number(chapter.end_time ?? 0)
+          const markers: { key: string; title: string; time: number }[] = []
+          if (start >= 0) {
+            markers.push({ key: `cs-${index}`, title: chapter.title || '', time: start })
+          }
+          if (end > start) {
+            markers.push({ key: `ce-${index}`, title: chapter.title || '', time: end })
+          }
+          return markers
+        })
     }
 
     return segments

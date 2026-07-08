@@ -169,6 +169,15 @@ function normalizeVideoStatus(status: string): Task['status'] {
   return 'RUNNING'
 }
 
+function extractPageParam(url: string): string {
+  if (!url) return '1'
+  try {
+    return new URL(url).searchParams.get('p') || '1'
+  } catch {
+    return '1'
+  }
+}
+
 function taskMatchesVideo(task: Task, data: {
   parsed?: ParseVideoResponse | null
   targetUrl: string
@@ -181,11 +190,18 @@ function taskMatchesVideo(task: Task, data: {
   if (parsedVideoId && (taskVideoId === parsedVideoId || task.id === parsedVideoId)) return true
 
   if (!data.targetBvid) return false
-  return (
+
+  const bvidMatch =
     rawInfoBvid(task.audioMeta?.raw_info) === data.targetBvid ||
     extractBvid(task.formData?.video_url || '') === data.targetBvid ||
     extractBvid(task.audioMeta?.source_url || '') === data.targetBvid
-  )
+
+  if (!bvidMatch) return false
+
+  // 同一 BV 号下用 p 参数区分不同分 P
+  const existingP = extractPageParam(task.formData?.video_url || task.audioMeta?.source_url || '')
+  const newP = extractPageParam(data.targetUrl)
+  return existingP === newP
 }
 
 function backendVideoMatches(video: VideoItem, data: {
