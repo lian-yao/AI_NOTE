@@ -149,9 +149,8 @@ $BackendRunner $BackendApp$ReloadArg --host $HostAddress --port $BackendPort
 $FrontendCommand = @"
 `$Host.UI.RawUI.WindowTitle = 'AI_NOTE frontend -> $Backend'
 cd "$FrontendDir"
-`$env:VITE_API_BASE_URL = "$ApiBaseUrl"
-`$env:VITE_BACKEND_MODE = "$Backend"
-`$env:VITE_FRONTEND_PORT = "$FrontendPort"
+  `$env:VITE_BACKEND_MODE = "$Backend"
+  `$env:VITE_FRONTEND_PORT = "$FrontendPort"
 `$env:VITE_ENABLE_WORKSPACE_MOCK = "false"
 npm run dev
 "@

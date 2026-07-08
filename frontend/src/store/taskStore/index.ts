@@ -101,11 +101,13 @@ function storageSafeKey(value: string): string {
 }
 
 const apiBaseURL = getApiBaseURL()
+// 统一存储 key：只取路径部分，去掉 host:port，确保手动启动和脚本启动 key 一致
+const storageKeyURL = apiBaseURL.replace(/^https?:\/\/[^\/]+/, '')
 const explicitBackendMode = String(import.meta.env.VITE_BACKEND_MODE || '').toLowerCase()
 export const isMockBackend =
   explicitBackendMode === 'mock' ||
-  (explicitBackendMode !== 'real' && /(^|[:/])8010(\/|$)/.test(apiBaseURL))
-const taskStorageName = `task-storage:${isMockBackend ? 'mock' : 'real'}:${storageSafeKey(apiBaseURL)}`
+  (explicitBackendMode !== 'real' && /(^|[:/])8010(\/|$)/.test(storageKeyURL))
+const taskStorageName = `task-storage:${isMockBackend ? 'mock' : 'real'}:${storageSafeKey(storageKeyURL)}`
 const legacyTaskStorageName = 'task-storage'
 
 function valueFromRecord(value: unknown, key: string): string {
