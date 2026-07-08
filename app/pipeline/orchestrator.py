@@ -655,17 +655,14 @@ class PipelineOrchestrator:
                 def on_transcribe_progress(pct: float):
                     self._sync_progress(task, stage, 30 + int(pct * 0.7))
 
-                transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
                 _tc = self.transcriber
-                if hasattr(_tc, 'model_size'):
-                    logger.info(f"transcriber: {_tc.__class__.__name__} model={_tc.model_size} device={_tc.device} compute={getattr(_tc, 'compute_type', '?')}")
-                elif hasattr(_tc, '_local') and hasattr(_tc._local, 'model_size'):
-                    logger.info(f"transcriber: {_tc.__class__.__name__}({_tc._local.__class__.__name__}) model={_tc._local.model_size} device={_tc._local.device}")
-                elif hasattr(_tc, 'local') and hasattr(_tc.local, 'model_size'):
-                    logger.info(f"transcriber: {_tc.__class__.__name__}({_tc.local.__class__.__name__}) model={_tc.local.model_size} device={_tc.local.device}")
-                else:
-                    logger.info(f"transcriber: {_tc.__class__.__name__}")
-
+            if hasattr(_tc, 'model_size'):
+                logger.info(f"transcriber: {_tc.__class__.__name__} model={_tc.model_size} device={_tc.device}")
+            elif hasattr(_tc, 'local') and hasattr(_tc.local, 'model_size'):
+                logger.info(f"transcriber: {_tc.__class__.__name__}({_tc.local.__class__.__name__}) model={_tc.local.model_size} device={_tc.local.device}")
+            else:
+                logger.info(f"transcriber: {_tc.__class__.__name__}")
+            transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
             if not transcribe_result.success:
                 raise RuntimeError(transcribe_result.error or "语音转写失败，未返回错误详情")
 
