@@ -16,6 +16,8 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "uvicorn[standard]>=0.24.0",
     "yt-dlp>=2024.0.0",
+    # GPU 加速（Windows 自动复制 DLL，其他平台无影响）
+    "nvidia-cublas-cu12>=12.0.0",
 ]
 
 [tool.ruff]

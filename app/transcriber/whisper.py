@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import warnings
 from collections.abc import Callable
 from pathlib import Path
@@ -18,6 +19,62 @@ warnings.filterwarnings(
     message=r"pkg_resources is deprecated as an API.*",
     category=UserWarning,
 )
+
+
+def _setup_cuda_dlls() -> bool:
+    """确保 cuBLAS DLL 可被 ctranslate2 加载。
+
+    自动发现 nvidia-cublas-cu12 pip 包的 bin 目录，
+    将必要的 DLL 复制到 ctranslate2 包目录下（同级加载策略）。
+    返回 True 表示 CUDA DLL 已就绪。
+    """
+    if sys.platform != "win32":
+        return True
+
+    _REQUIRED = ("cublas64_12.dll", "cublasLt64_12.dll")
+
+    try:
+        import ctranslate2 as _ct2
+        _ct2_dir = Path(_ct2.__file__).parent
+    except Exception:
+        return False
+
+    # 已存在 → 无需操作
+    if all((_ct2_dir / d).exists() for d in _REQUIRED):
+        return True
+
+    # 自动发现 nvidia-cublas-cu12 的 bin 目录
+    _cublas_bin = None
+    try:
+        import nvidia.cublas
+        _cublas_bin = Path(nvidia.cublas.__path__[0]) / "bin"
+    except ImportError:
+        pass
+
+    if _cublas_bin is None:
+        for _site in sys.path:
+            _candidate = Path(_site) / "nvidia" / "cublas" / "bin"
+            if (_candidate / "cublas64_12.dll").exists():
+                _cublas_bin = _candidate
+                break
+
+    if _cublas_bin is None:
+        return False
+
+    # 复制 DLL 到 ctranslate2 目录
+    import shutil
+    for _dll in _REQUIRED:
+        _src = _cublas_bin / _dll
+        if _src.exists() and not (_ct2_dir / _dll).exists():
+            try:
+                shutil.copy2(str(_src), str(_ct2_dir / _dll))
+            except Exception:
+                return False
+
+    return all((_ct2_dir / d).exists() for d in _REQUIRED)
+
+
+_HAS_CUDA_DLLS = _setup_cuda_dlls()
 
 
 class FasterWhisperTranscriber:
@@ -96,10 +153,32 @@ class FasterWhisperTranscriber:
                 "faster-whisper 未安装。请运行: pip install faster-whisper"
             )
 
-        # auto 走 CPU；只有用户显式配置 cuda 时才尝试 GPU。
-        devices_to_try = [self.device] if self.device != "auto" else ["cpu"]
-        last_error = None
+        logger = __import__("loguru").logger
 
+        # 确定尝试的设备列表，CUDA 不可用时自动降级 CPU
+        if self.device == "auto":
+            # auto: 检测 CUDA，有则用 GPU，无则用 CPU
+            _try_cuda = _HAS_CUDA_DLLS
+            try:
+                import torch
+                _try_cuda = _try_cuda and torch.cuda.is_available()
+            except ImportError:
+                pass
+            devices_to_try = ["cuda", "cpu"] if _try_cuda else ["cpu"]
+        elif self.device == "cuda":
+            if not _HAS_CUDA_DLLS:
+                logger.warning(
+                    "CUDA 设备已配置但未找到 cuBLAS 库。"
+                    "请运行: pip install nvidia-cublas-cu12  以启用 GPU 加速。"
+                    "当前将降级到 CPU。"
+                )
+                devices_to_try = ["cuda", "cpu"]
+            else:
+                devices_to_try = ["cuda"]
+        else:
+            devices_to_try = [self.device]
+
+        last_error = None
         for dev in devices_to_try:
             try:
                 dev_ct = self._resolve_compute_type(dev, self.compute_type)
@@ -108,6 +187,11 @@ class FasterWhisperTranscriber:
                     device=dev,
                     compute_type=dev_ct,
                 )
+                if dev != self.device:
+                    logger.warning(
+                        f"Whisper 已从 {self.device} 降级到 {dev}"
+                        + (f"（原因: {last_error}）" if last_error else "")
+                    )
                 return
             except (RuntimeError, ValueError) as e:
                 last_error = str(e)
@@ -115,7 +199,10 @@ class FasterWhisperTranscriber:
                     continue  # 降级尝试下一个 device
                 raise  # 其他错误直接抛出
 
-        raise RuntimeError(f"无法加载 Whisper 模型: {last_error}")
+        _hint = ""
+        if not _HAS_CUDA_DLLS and self.device in ("cuda", "auto"):
+            _hint = "。提示: pip install nvidia-cublas-cu12 可安装缺失的 CUDA 库"
+        raise RuntimeError(f"无法加载 Whisper 模型: {last_error}{_hint}")
 
     async def transcribe(
         self,
@@ -151,6 +238,8 @@ class FasterWhisperTranscriber:
 
         loop = asyncio.get_running_loop()
 
+        _last_pct = [0]  # 用列表避免 nonlocal 声明
+
         def _sync_transcribe():
             segments_raw, info = self._model.transcribe(
                 audio_path,
@@ -176,7 +265,10 @@ class FasterWhisperTranscriber:
 
                 if progress_cb and total_duration > 0:
                     pct = (seg.end / total_duration) * 100.0
-                    progress_cb(min(pct, 99.0))
+                    # 每 5% 才回调一次，减少 I/O 开销
+                    if int(pct) - _last_pct[0] >= 5 or pct >= 99.0:
+                        _last_pct[0] = int(pct)
+                        progress_cb(min(pct, 99.0))
 
             if progress_cb:
                 progress_cb(100.0)
