@@ -348,6 +348,7 @@ class PipelineOrchestrator:
         if not enabled_model or not enabled_model.enabled:
             raise RuntimeError(f"模型未启用: {model_name}")
 
+        logger.info(f"model: {provider_id}/{model_name}")
         return get_provider_llm_client(provider, model_name)
 
     async def _run_task(self, task: PipelineTask) -> None:
@@ -358,11 +359,13 @@ class PipelineOrchestrator:
             db = SessionLocal()
             try:
                 task.status = TaskStatus.RUNNING
+                logger.info(f"task start: {task.task_id} - {task.source_url}")
                 for stage in PipelineStage:
                     if task.cancelled:
                         return
                     await self._run_stage(task, stage, db)
                 task.status = TaskStatus.COMPLETED
+                logger.info(f"task done: {task.task_id} - duration: {time.time() - task.created_at:.1f}s")
                 self._emit(PipelineEvent(event="completed", task_id=task.task_id, video_id=task.video_id or "", stage="", status="completed", progress=100, message="处理完成"))
                 db.commit()
             except TaskCancelledError:
@@ -403,6 +406,7 @@ class PipelineOrchestrator:
     async def _run_stage(self, task: PipelineTask, stage: PipelineStage, db) -> None:
         "执行单个流水线阶段。"
         task.current_stage = stage
+        logger.info(f"stage start: {task.task_id} - {stage.value}")
         self._sync_task_model(task, stage, "running", db)
         self._emit(PipelineEvent(event="progress", task_id=task.task_id, video_id=task.video_id or "", stage=stage.value, status="running", progress=self._calc_progress(stage, 0), message=f"{stage.label()}..."))
 
@@ -479,6 +483,7 @@ class PipelineOrchestrator:
                 self._sync_progress(task, stage, 30 + int(pct * 0.7))
 
             transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
+            logger.info(f"transcriber: {self.transcriber.__class__.__name__}")
             if not transcribe_result.success:
                 raise RuntimeError(transcribe_result.error or "语音转写失败，未返回错误详情")
 
@@ -623,6 +628,7 @@ class PipelineOrchestrator:
                     db.flush()
             self._sync_progress(task, stage, 100)
 
+        logger.info(f"stage done: {task.task_id} - {stage.value}")
         self._sync_task_model(task, stage, "completed", db)
         db.commit()
 
