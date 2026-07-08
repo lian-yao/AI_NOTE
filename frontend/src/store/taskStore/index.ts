@@ -399,16 +399,18 @@ export const useTaskStore = create<TaskStore>()(
         const { tasks } = get()
         const task = tasks.find(t => t.id === id)
         if (!task) return
-        // 标记为已取消，不再轮询
         set(state => ({
           tasks: state.tasks.filter(t => t.id !== id),
+          currentTaskId: state.currentTaskId === id ? null : state.currentTaskId,
         }))
         try {
-          const { cancelBackendTask } = await import('@/services/note')
-          await cancelBackendTask(id)
-          toast.success('任务已取消')
+          const { delete_task } = await import('@/services/note')
+          await delete_task({
+            video_id: task.audioMeta?.video_id || id,
+            platform: task.formData?.platform || "",
+          })
         } catch (e) {
-          console.error('取消失败:', e)
+          console.error('删除失败:', e)
         }
       },
 

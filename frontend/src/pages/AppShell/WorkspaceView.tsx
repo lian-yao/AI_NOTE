@@ -22,7 +22,7 @@ import {
   Eye,
   ExternalLink,
   FileText,
-  Loader2,
+  Loader2, Trash2,
   MessageSquare,
   Maximize2,
   Pause,
@@ -326,6 +326,7 @@ function StatusBlock({ task }: { task: Task }) {
   const [logs, setLogs] = useState<TaskLogItem[]>([])
   const retryTask = useTaskStore(state => state.retryTask)
   const cancelTask = useTaskStore(state => state.cancelTask)
+  const removeTask = useTaskStore(state => state.removeTask)
 
   useEffect(() => {
     if (isSuccess) return
@@ -374,6 +375,7 @@ function StatusBlock({ task }: { task: Task }) {
         )}
       </div>
       {isFailed && (
+        <div className="flex gap-3">
         <button
           type="button"
           onClick={() => retryTask(task.id)}
@@ -382,6 +384,15 @@ function StatusBlock({ task }: { task: Task }) {
           <RefreshCcw size={15} />
           重试生成
         </button>
+        <button
+          type="button"
+          onClick={() => removeTask(task.id)}
+          className="flex items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-800/50 px-4 py-2 text-sm font-medium text-neutral-300 transition-colors hover:bg-red-500/20 hover:text-red-300"
+        >
+          <Trash2 size={15} />
+          删除记录
+        </button>
+        </div>
       )}
       {logs.length > 0 && (
         <div className="w-full max-w-xl rounded-xl border border-neutral-800 bg-[#161616] p-4 text-left">

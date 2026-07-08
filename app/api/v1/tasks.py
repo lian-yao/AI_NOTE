@@ -309,5 +309,10 @@ def cancel_task(task_id: str, request: Request, db: Session = Depends(get_db)):
     for t in tasks:
         t.status = "cancelled"
         t.error_message = "已被用户取消"
+    # 3. 更新 Video 状态，避免 listVideos / backendVideoToTask 重新恢复任务
+    if tasks:
+        from app.models.video import Video
+        video_ids = {t.video_id for t in tasks if t.video_id and t.video_id != 0}
+        db.query(Video).filter(Video.id.in_(list(video_ids))).update({"status": "cancelled"}, synchronize_session="fetch")
     db.commit()
     return {"task_id": task_id, "status": "cancelled", "cancelled": cancelled_any}

@@ -160,6 +160,7 @@ function rawInfoBvid(rawInfo: unknown): string {
 function normalizeVideoStatus(status: string): Task['status'] {
   const value = status.toLowerCase()
   if (value === 'completed' || value === 'success') return 'SUCCESS'
+  if (value === 'cancelled') return 'CANCELLED'
   if (value === 'failed') return 'FAILED'
   if (value === 'pending') return 'PENDING'
   if (value === 'downloading') return 'DOWNLOADING'
@@ -184,6 +185,8 @@ function taskMatchesVideo(task: Task, data: {
   targetBvid: string
 }) {
   if (task.status === 'FAILED') return false
+  if (task.status === 'CANCELLED') return false
+
 
   const parsedVideoId = data.parsed?.video_id || ''
   const taskVideoId = task.audioMeta?.video_id || task.id
@@ -210,6 +213,7 @@ function backendVideoMatches(video: VideoItem, data: {
   targetBvid: string
 }) {
   if (video.status?.toLowerCase() === 'failed') return false
+  if (video.status?.toLowerCase() === 'cancelled') return false
   if (data.parsed?.video_id && video.video_id === data.parsed.video_id) return true
   if (!data.targetBvid) return false
   return video.bvid === data.targetBvid || extractBvid(video.url || '') === data.targetBvid

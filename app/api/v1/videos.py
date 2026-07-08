@@ -619,13 +619,23 @@ def get_video(video_id: str, db: Session = Depends(get_db)):
 async def delete_video(video_id: str, request: Request, db: Session = Depends(get_db)):
     # Cancel an in-flight pipeline task before removing local artifacts.
     orchestrator = getattr(request.app.state, "orchestrator", None)
+    resolved_video_id = video_id
     if orchestrator:
         for task_id, task in list(getattr(orchestrator, "_tasks", {}).items()):
             if task.video_id == video_id:
                 orchestrator.cancel_task(task_id)
                 break
+        # 如果 video_id 不是已知 video_id，尝试按 task_id 查找
+        if resolved_video_id == video_id:
+            orch_task = orchestrator._tasks.get(video_id)
+            if orch_task and orch_task.video_id:
+                resolved_video_id = orch_task.video_id
+                for tid, t in list(orchestrator._tasks.items()):
+                    if t.video_id == resolved_video_id:
+                        orchestrator.cancel_task(tid)
+                        break
 
-    video = db.query(Video).filter(Video.video_id == video_id).first()
+    video = db.query(Video).filter(Video.video_id == resolved_video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
 

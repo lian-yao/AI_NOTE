@@ -156,6 +156,7 @@ class PipelineOrchestrator:
                 self.video_processor = MockProcessor()
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._tasks: dict[str, PipelineTask] = {}
+        self._task_futures: dict[str, asyncio.Task] = {}
         self._progress_callbacks: list[ProgressCallback] = []
         self._lock = asyncio.Lock()
 
@@ -254,7 +255,7 @@ class PipelineOrchestrator:
 
             task = PipelineTask(source_url, options, reusable_task_id)
             self._tasks[task.task_id] = task
-        asyncio.create_task(self._run_task(task))
+        self._task_futures[task.task_id] = asyncio.create_task(self._run_task(task))
         return task
 
     def get_task(self, task_id: str) -> PipelineTask | None:
@@ -267,6 +268,9 @@ class PipelineOrchestrator:
         task = self._tasks.get(task_id)
         if task and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
             task.cancel()
+            future = self._task_futures.get(task_id)
+            if future and not future.done():
+                future.cancel()
             return True
         return False
 
@@ -393,6 +397,7 @@ class PipelineOrchestrator:
                     db.rollback()
                 self._emit(PipelineEvent(event="error", task_id=task.task_id, video_id=task.video_id or "", stage=task.current_stage.value if task.current_stage else "", status="failed", progress=task.progress, message=task.error or str(e)))
             finally:
+                self._task_futures.pop(task.task_id, None)
                 db.close()
 
     async def _run_stage(self, task: PipelineTask, stage: PipelineStage, db) -> None:
