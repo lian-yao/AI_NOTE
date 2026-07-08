@@ -61,7 +61,9 @@ class QAEngine:
         ]
 
         # 4. 流式调用 LLM
-        logger.info(f"问答请求：{query}")
+        _m = getattr(self.llm, 'model', '?')
+        logger.info(f"qa: model={self.llm.__class__.__name__}({_m})")
+        logger.info(f"qa: request={query[:80]}")
         answer_parts = []
         async for token in self.llm.stream_chat(messages, temperature=0.3):
             answer_parts.append(token)
