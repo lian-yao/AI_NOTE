@@ -107,6 +107,20 @@ class AutoTranscriber:
         if self.local:
             self.local.reload(model_size)
 
+    def switch_device(self, device: str):
+        """热切换转写设备（cpu/cuda/auto）。
+
+        重置失败计数并重置已加载的模型，
+        下次 transcribe 时以新设备加载。
+
+        Args:
+            device: 设备类型 (cpu/cuda/auto)
+        """
+        self._local_failures = 0
+        if self.local:
+            self.local.device = device
+            self.local._model = None  # 重置模型，下次重新加载
+
     def reset(self):
         """重置失败计数（例如用户手动切换了转写方式后调用）。"""
         self._local_failures = 0

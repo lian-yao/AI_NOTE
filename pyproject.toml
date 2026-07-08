@@ -16,8 +16,6 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "uvicorn[standard]>=0.24.0",
     "yt-dlp>=2024.0.0",
-    # GPU 加速（Windows 自动复制 DLL，其他平台无影响）
-    "nvidia-cublas-cu12>=12.0.0",
 ]
 
 [tool.ruff]
@@ -35,4 +33,10 @@ dev = [
     "numpy>=2.5.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+]
+gpu = [
+    # GPU 加速依赖（可选安装）
+    # CUDA 12.x 用户: uv sync --group gpu
+    # CUDA 11.x 用户需手动安装: pip install nvidia-cublas-cu11
+    "nvidia-cublas-cu12>=12.0.0",
 ]

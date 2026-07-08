@@ -20,6 +20,7 @@ const LOCAL_WHISPER_MODELS_KEY = 'ai-note:whisper-models:fallback'
 export interface TranscriberConfig {
   transcriber_type: string
   whisper_model_size: string
+  whisper_device: string
   available_types: { value: string; label: string }[]
   whisper_model_sizes: string[]
   whisper_builtin_models?: Record<string, string>
@@ -44,6 +45,7 @@ export interface ModelsStatusResponse {
 const defaultTranscriberConfig: TranscriberConfig = {
   transcriber_type: 'fast-whisper',
   whisper_model_size: 'small',
+  whisper_device: 'auto',
   available_types: [
     { value: 'fast-whisper', label: 'fast-whisper' },
     { value: 'mlx-whisper', label: 'mlx-whisper' },
@@ -115,6 +117,7 @@ export const getTranscriberConfig = async (opts?: CallOpts): Promise<Transcriber
 export const updateTranscriberConfig = async (data: {
   transcriber_type: string
   whisper_model_size?: string
+  whisper_device?: string
 }) => {
   try {
     return await request.put('/transcribers/config', data, cfg())
@@ -260,4 +263,66 @@ export const deleteWhisperModel = async (name: string) => {
     }
     throw error
   }
+}
+
+// ── GPU 加速相关接口 ──
+
+export interface GPUInfo {
+  cuda_available: boolean
+  cuda_version: string | null
+  gpu_name: string | null
+  driver_version: string | null
+  recommended_package: string | null
+  gpu_deps_installed: boolean
+  torch_cuda_available: boolean
+  torch_installed: boolean
+}
+
+export interface GPUInstallResult {
+  task_id: string
+  status: string
+  package: string
+}
+
+export interface GPUInstallProgress {
+  task_id: string
+  status: 'starting' | 'running' | 'completed' | 'failed' | 'not_found'
+  progress: number
+  message: string
+  error: string | null
+  package?: string
+}
+
+export const getGPUInfo = async (opts?: CallOpts): Promise<GPUInfo> => {
+  try {
+    const res = await request.get('/system/gpu/info', cfg(opts))
+    return res.data || res
+  } catch {
+    return {
+      cuda_available: false,
+      cuda_version: null,
+      gpu_name: null,
+      driver_version: null,
+      recommended_package: null,
+      gpu_deps_installed: false,
+      torch_cuda_available: false,
+      torch_installed: false,
+    }
+  }
+}
+
+export const installGPUDrivers = async (): Promise<GPUInstallResult> => {
+  const res = await request.post('/system/gpu/install', undefined, cfg())
+  return res.data || res
+}
+
+export const getGPUInstallProgress = async (
+  taskId: string,
+  opts?: CallOpts,
+): Promise<GPUInstallProgress> => {
+  const res = await request.get(
+    `/system/gpu/install/${encodeURIComponent(taskId)}/progress`,
+    cfg(opts),
+  )
+  return res.data || res
 }

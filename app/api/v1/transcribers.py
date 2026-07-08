@@ -31,6 +31,7 @@ def _load_config() -> dict:
     default = {
         "transcriber_type": "fast-whisper",
         "whisper_model_size": settings.whisper_model_size or "small",
+        "whisper_device": settings.whisper_device or "auto",
     }
     if _CONFIG_FILE.exists():
         try:
@@ -62,6 +63,7 @@ def get_transcriber_config():
     return {
         "transcriber_type": _runtime_config["transcriber_type"],
         "whisper_model_size": _runtime_config["whisper_model_size"],
+        "whisper_device": _runtime_config.get("whisper_device", "auto"),
         "available_types": AVAILABLE_TYPES,
         "whisper_model_sizes": WHISPER_MODEL_SIZES,
         "whisper_builtin_models": {s: s for s in WHISPER_MODEL_SIZES},
@@ -73,6 +75,7 @@ def get_transcriber_config():
 class TranscriberConfigUpdate(BaseModel):
     transcriber_type: str | None = None
     whisper_model_size: str | None = None
+    whisper_device: str | None = None
 
 
 @router.put("/config")
@@ -80,16 +83,25 @@ def update_transcriber_config(body: TranscriberConfigUpdate, request: Request):
     """更新转写器运行时配置（自动持久化 + 热更新运行中的编排器）。"""
     updated = []
     old_size = _runtime_config.get("whisper_model_size")
+    old_device = _runtime_config.get("whisper_device")
     if body.transcriber_type:
         _runtime_config["transcriber_type"] = body.transcriber_type
         updated.append("transcriber_type")
     if body.whisper_model_size:
         _runtime_config["whisper_model_size"] = body.whisper_model_size
         updated.append("whisper_model_size")
+    if body.whisper_device is not None:
+        if body.whisper_device in ("cpu", "cuda", "auto"):
+            _runtime_config["whisper_device"] = body.whisper_device
+            updated.append("whisper_device")
+        else:
+            from loguru import logger
+            logger.warning(f"无效的 whisper_device 值: {body.whisper_device}，已忽略")
     if updated:
         _save_config()
 
     # ── 热更新运行中的编排器转写器 ──
+    device_changed = body.whisper_device is not None and body.whisper_device != old_device
     if body.whisper_model_size and body.whisper_model_size != old_size:
         try:
             orchestrator = request.app.state.orchestrator
@@ -101,6 +113,11 @@ def update_transcriber_config(body: TranscriberConfigUpdate, request: Request):
                     reset_download(old_size)
                 # 通知编排器切换模型
                 orchestrator.transcriber.switch_local(body.whisper_model_size)
+            # ── 热更新 device ──
+            if device_changed and hasattr(
+                orchestrator.transcriber, "switch_device"
+            ):
+                orchestrator.transcriber.switch_device(body.whisper_device)
         except Exception:
             import traceback
             from loguru import logger
