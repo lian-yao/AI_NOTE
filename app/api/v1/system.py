@@ -4,6 +4,8 @@ System health API.
 import time
 import shutil
 import subprocess
+import threading
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -270,4 +272,338 @@ async def deploy_status():
                 "downloaded": False
             }
         }
+    }
+
+
+# ── GPU 加速相关接口 ──
+
+# GPU 安装任务追踪: {task_id: {status, progress, message, error}}
+_gpu_install_tasks: dict[str, dict] = {}
+
+
+def _detect_cuda_version() -> tuple[str | None, str | None]:
+    """通过 nvidia-smi 检测 CUDA 驱动版本和 GPU 名称。
+
+    Returns:
+        (cuda_version, gpu_name) — 如 ("12.5", "NVIDIA GeForce RTX 3060")
+    """
+    cuda_version = None
+    gpu_name = None
+
+    try:
+        # 获取 GPU 名称
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            gpu_name = result.stdout.strip().split("\n")[0].strip()
+
+        # 获取 CUDA 驱动版本
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            driver_ver = result.stdout.strip().split("\n")[0].strip()
+            # 驱动版本如 "546.01"，提取主版本号推断 CUDA 版本
+            try:
+                major = int(driver_ver.split(".")[0])
+                # NVIDIA 驱动主版本 → CUDA 版本粗略映射
+                if major >= 560:
+                    cuda_version = "12.6"
+                elif major >= 545:
+                    cuda_version = "12.4"
+                elif major >= 525:
+                    cuda_version = "12.0"
+                elif major >= 510:
+                    cuda_version = "11.8"
+                elif major >= 470:
+                    cuda_version = "11.4"
+                elif major >= 450:
+                    cuda_version = "11.0"
+                else:
+                    cuda_version = "10.x"
+            except (ValueError, IndexError):
+                cuda_version = None
+
+        # 尝试通过 PyTorch 获取更精确的 CUDA 版本
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch_cuda_ver = torch.version.cuda
+                if torch_cuda_ver:
+                    cuda_version = torch_cuda_ver
+        except ImportError:
+            pass
+
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    return cuda_version, gpu_name
+
+
+def _detect_cublas_installed() -> bool:
+    """检测 nvidia-cublas-cuXX 是否已安装且可被 ctranslate2 加载。"""
+    # 1. 检查 pip 包是否实际安装
+    try:
+        import importlib.metadata
+        for pkg_name in ("nvidia-cublas-cu12", "nvidia-cublas-cu11"):
+            try:
+                importlib.metadata.version(pkg_name)
+                break
+            except importlib.metadata.PackageNotFoundError:
+                pass
+        else:
+            # 两个包都不在 pip 中
+            return False
+    except Exception:
+        pass
+
+    # 2. 检查 DLL 是否可被 ctranslate2 加载
+    try:
+        from app.transcriber.whisper import _HAS_CUDA_DLLS
+        return _HAS_CUDA_DLLS
+    except Exception:
+        pass
+
+    # 回退：直接尝试 import
+    try:
+        import ctranslate2 as _ct2
+        _ct2_dir = Path(_ct2.__file__).parent
+
+        for dll in ("cublas64_12.dll", "cublas64_11.dll"):
+            if (_ct2_dir / dll).exists():
+                return True
+
+        import nvidia.cublas
+        return True
+    except ImportError:
+        return False
+    except Exception:
+        return False
+
+
+def _get_recommended_package(cuda_version: str | None) -> str:
+    """根据 CUDA 版本推荐 pip 包名。"""
+    if cuda_version is None:
+        return "nvidia-cublas-cu12"
+    try:
+        major = int(cuda_version.split(".")[0])
+        minor = int(cuda_version.split(".")[1]) if len(cuda_version.split(".")) > 1 else 0
+        if major >= 12:
+            return "nvidia-cublas-cu12"
+        else:
+            return "nvidia-cublas-cu11"
+    except (ValueError, IndexError):
+        return "nvidia-cublas-cu12"
+
+
+@router.get("/gpu/info")
+def get_gpu_info():
+    """获取 GPU 详细信息和推荐驱动包。
+
+    Returns:
+        cuda_available: 是否有 NVIDIA GPU
+        cuda_version: CUDA 版本号 (如 "12.5")
+        gpu_name: GPU 型号
+        driver_version: NVIDIA 驱动版本
+        recommended_package: 推荐安装的 pip 包名
+        gpu_deps_installed: cuBLAS 依赖是否已安装
+        torch_cuda_available: PyTorch 是否检测到 CUDA
+    """
+    cuda_version, gpu_name = _detect_cuda_version()
+    cuda_available = gpu_name is not None
+
+    # 尝试获取 torch CUDA 状态
+    torch_installed = False
+    torch_cuda_available = False
+    try:
+        import torch
+        torch_installed = True
+        torch_cuda_available = torch.cuda.is_available()
+        if torch_cuda_available and torch.version.cuda:
+            cuda_version = torch.version.cuda
+    except ImportError:
+        pass
+
+    # 获取驱动版本
+    driver_version = None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            driver_version = result.stdout.strip().split("\n")[0].strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    recommended_package = _get_recommended_package(cuda_version) if cuda_available else None
+    gpu_deps_installed = _detect_cublas_installed()
+
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "cuda_available": cuda_available,
+            "cuda_version": cuda_version,
+            "gpu_name": gpu_name,
+            "driver_version": driver_version,
+            "recommended_package": recommended_package,
+            "gpu_deps_installed": gpu_deps_installed,
+            "torch_cuda_available": torch_cuda_available,
+            "torch_installed": torch_installed,
+        },
+    }
+
+
+@router.post("/gpu/install")
+def install_gpu_deps():
+    """后台安装 GPU 依赖（uv sync --group gpu 或 uv pip install）。
+
+    安装前自动检测 CUDA 版本：
+    - CUDA 12.x → uv sync --group gpu（从 pyproject.toml 安装 nvidia-cublas-cu12）
+    - CUDA 11.x → uv pip install nvidia-cublas-cu11
+    返回 task_id，通过 /gpu/install/{task_id}/progress 轮询进度。
+    """
+    cuda_version, gpu_name = _detect_cuda_version()
+    package = _get_recommended_package(cuda_version)
+
+    # 确定 uv 可执行文件路径
+    uv_path = shutil.which("uv") or "uv"
+
+    task_id = f"gpu_{uuid.uuid4().hex[:8]}"
+    _gpu_install_tasks[task_id] = {
+        "status": "starting",
+        "progress": 0,
+        "message": f"准备安装 {package}...",
+        "error": None,
+        "package": package,
+        "cuda_version": cuda_version,
+    }
+
+    def _install_worker():
+        try:
+            _gpu_install_tasks[task_id]["status"] = "running"
+            _gpu_install_tasks[task_id]["progress"] = 5
+            _gpu_install_tasks[task_id]["message"] = f"正在安装 {package}..."
+
+            import sys
+            from app.core.paths import project_root as _project_root
+
+            _project_dir = str(_project_root())
+
+            # 根据 CUDA 版本选择安装方式
+            if package == "nvidia-cublas-cu12":
+                install_cmd = [uv_path, "sync", "--group", "gpu"]
+                _gpu_install_tasks[task_id]["message"] = "uv sync --group gpu"
+            else:
+                install_cmd = [uv_path, "pip", "install", package]
+                _gpu_install_tasks[task_id]["message"] = f"uv pip install {package}"
+
+            process = subprocess.Popen(
+                install_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=_project_dir,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+
+            # 流式读取输出，实时更新进度
+            output_lines = []
+            for line in process.stdout:
+                line = line.strip()
+                if line:
+                    output_lines.append(line)
+                    # 根据输出推断进度
+                    last_line = output_lines[-1] if output_lines else ""
+                    if "Downloading" in last_line or "downloading" in last_line:
+                        _gpu_install_tasks[task_id]["progress"] = min(
+                            _gpu_install_tasks[task_id]["progress"] + 3, 80,
+                        )
+                    elif "Resolved" in last_line or "Installing" in last_line or "Prepared" in last_line:
+                        _gpu_install_tasks[task_id]["progress"] = min(
+                            _gpu_install_tasks[task_id]["progress"] + 8, 90,
+                        )
+                    elif "Installed" in last_line:
+                        _gpu_install_tasks[task_id]["progress"] = 92
+                    _gpu_install_tasks[task_id]["message"] = last_line[-120:]
+
+            process.wait()
+
+            if process.returncode == 0:
+                _gpu_install_tasks[task_id]["progress"] = 95
+                # 安装成功后重新执行 DLL 设置
+                try:
+                    from app.transcriber.whisper import _setup_cuda_dlls
+                    _setup_cuda_dlls()
+                except Exception:
+                    pass
+
+                _gpu_install_tasks[task_id]["status"] = "completed"
+                _gpu_install_tasks[task_id]["progress"] = 100
+                _gpu_install_tasks[task_id]["message"] = f"GPU 驱动 {package} 安装完成"
+            else:
+                error_output = "\n".join(output_lines[-10:]) or "安装失败"
+                _gpu_install_tasks[task_id]["status"] = "failed"
+                _gpu_install_tasks[task_id]["error"] = error_output.strip()[-500:]
+                _gpu_install_tasks[task_id]["message"] = f"安装 {package} 失败"
+
+        except Exception as e:
+            _gpu_install_tasks[task_id]["status"] = "failed"
+            _gpu_install_tasks[task_id]["error"] = str(e)
+            _gpu_install_tasks[task_id]["message"] = f"安装出错: {e}"
+
+    thread = threading.Thread(
+        target=_install_worker, daemon=True,
+        name=f"gpu-install-{task_id}",
+    )
+    thread.start()
+
+    return {
+        "code": 0,
+        "message": "安装已启动",
+        "data": {
+            "task_id": task_id,
+            "status": "started",
+            "package": package,
+        },
+    }
+
+
+@router.get("/gpu/install/{task_id}/progress")
+def get_gpu_install_progress(task_id: str):
+    """查询 GPU 驱动安装进度。
+
+    Returns:
+        task_id, status (starting/running/completed/failed),
+        progress (0-100), message, error
+    """
+    task = _gpu_install_tasks.get(task_id)
+    if task is None:
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "task_id": task_id,
+                "status": "not_found",
+                "progress": 0,
+                "message": "任务不存在",
+                "error": None,
+            },
+        }
+
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "task_id": task_id,
+            "status": task["status"],
+            "progress": task["progress"],
+            "message": task["message"],
+            "error": task["error"],
+            "package": task.get("package"),
+        },
     }
