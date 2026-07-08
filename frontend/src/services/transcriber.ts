@@ -273,6 +273,8 @@ export interface GPUInfo {
   gpu_name: string | null
   driver_version: string | null
   recommended_package: string | null
+  installed_package: string | null
+  package_mismatch: boolean
   gpu_deps_installed: boolean
   torch_cuda_available: boolean
   torch_installed: boolean
@@ -325,4 +327,8 @@ export const getGPUInstallProgress = async (
     cfg(opts),
   )
   return res.data || res
+}
+
+export const uninstallGPUDrivers = async () => {
+  return await request.delete('/system/gpu/uninstall', cfg())
 }

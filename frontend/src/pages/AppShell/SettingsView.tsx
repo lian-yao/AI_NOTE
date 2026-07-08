@@ -60,6 +60,7 @@ import {
   getGPUInfo,
   installGPUDrivers,
   getGPUInstallProgress,
+  uninstallGPUDrivers,
   type ModelStatus,
   type TranscriberConfig,
   type GPUInfo,
@@ -2089,7 +2090,41 @@ function TranscriberSection() {
                     </div>
 
                     {/* GPU 依赖状态 */}
-                    {gpuDepsReady ? (
+                    {gpuInfo?.package_mismatch ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                          <X size={14} />
+                          <span>
+                            已安装 {gpuInfo.installed_package}，但你的驱动是 CUDA {gpuInfo.cuda_version}，
+                            需要 {gpuInfo.recommended_package}
+                          </span>
+                        </div>
+                        {!gpuInstalling && (
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await uninstallGPUDrivers()
+                                toast.success(`已卸载 ${gpuInfo.installed_package}`)
+                                loadGPUInfo()
+                              }}
+                              className="flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200 transition-colors hover:bg-red-500/20"
+                            >
+                              <Trash2 size={14} />
+                              卸载旧版本
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleInstallGPU}
+                              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary/80"
+                            >
+                              <Download size={14} />
+                              安装正确版本（{gpuInfo.recommended_package}）
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : gpuDepsReady ? (
                       <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
                         <CheckCircle2 size={14} />
                         GPU 驱动已安装，可启用 GPU 加速
