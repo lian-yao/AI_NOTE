@@ -20,7 +20,6 @@ from app.core.database import get_db
 from app.models.video import Video
 from app.models.note import Note
 from app.schemas.video import VideoResponse
-from app.store.mock import MockStore
 
 router = APIRouter(prefix="/videos", tags=["videos"])
 
@@ -674,7 +673,7 @@ async def delete_video(video_id: str, request: Request, db: Session = Depends(ge
     if note:
         unlink_artifact(note.file_path)
         deleted_chunks = note.total_chunks or 0
-    await MockStore().delete_chunks(str(video.id))
+    from app.store.vector import VectorStore; await VectorStore().delete_vectors(video.video_id)
     db.delete(video)
     db.commit()
     return {

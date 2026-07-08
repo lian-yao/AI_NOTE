@@ -29,14 +29,8 @@ from app.store import Store
 from app.retriever import Retriever
 from app.qa import QAEngine
 
-from app.transcriber.mock import MockTranscriber
 from app.transcriber.bjian import BjianTranscriber
-from app.processor.mock import MockProcessor
 from app.store.vector import VectorStore
-from app.llm.mock import MockLLM
-from app.store.mock import MockStore
-from app.retriever.mock import MockRetriever
-from app.qa.mock import MockQA
 
 
 class PipelineStage(str, Enum):
@@ -143,105 +137,73 @@ class PipelineOrchestrator:
         qa: QAEngine | None = None,
         max_concurrency: int = 2,
     ):
-        self.processor = processor or MockProcessor()
-        # VideoProcessor: 优先用真实 B 模块（BilibiliVideoProcessor）
+        self.processor = processor
+        # VideoProcessor: ????? B ???BilibiliVideoProcessor?
         if video_processor:
             self.video_processor = video_processor
         else:
-            try:
-                from app.processor.video_processor import BilibiliVideoProcessor
-                from app.core.config import settings
-                self.video_processor = BilibiliVideoProcessor(data_dir=settings.data_dir)
-            except Exception:
-                self.video_processor = MockProcessor()
+            from app.processor.video_processor import BilibiliVideoProcessor
+            from app.core.config import settings
+            self.video_processor = BilibiliVideoProcessor(data_dir=settings.data_dir)
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._tasks: dict[str, PipelineTask] = {}
         self._task_futures: dict[str, asyncio.Task] = {}
         self._progress_callbacks: list[ProgressCallback] = []
         self._lock = asyncio.Lock()
 
-        # ── LLM: 有 API key 则用真实客户端 ──
+        # ?? LLM: ? API key ???????????? ??
         if llm:
             self.llm = llm
         else:
             from app.core.config import settings
-            if settings.tongyi_api_key or settings.deepseek_api_key:
-                from app.llm.client import get_llm_client
-                try:
-                    self.llm = get_llm_client()
-                except Exception:
-                    self.llm = MockLLM()
-            else:
-                self.llm = MockLLM()
+            if not settings.tongyi_api_key and not settings.deepseek_api_key:
+                raise RuntimeError("????? LLM API Key?VN_TONGYI_API_KEY / VN_DEEPSEEK_API_KEY?")
+            from app.llm.client import get_llm_client
+            self.llm = get_llm_client()
 
-        # ── Transcriber: 配置了必剪凭证则用必剪 ──
+        # ?? Transcriber: ??????????????? Faster-Whisper ??
         if transcriber:
             self.transcriber = transcriber
         else:
             from app.core.config import settings
             if settings.bjian_app_id and settings.bjian_access_token:
+                from app.transcriber.bjian import BjianTranscriber
                 self.transcriber = BjianTranscriber()
             else:
-                try:
-                    from app.transcriber.auto import AutoTranscriber
-                    from app.transcriber.whisper import FasterWhisperTranscriber
+                from app.transcriber.auto import AutoTranscriber
+                from app.transcriber.whisper import FasterWhisperTranscriber
+                model_size = settings.whisper_model_size
+                import json
+                tc_file = Path(settings.data_dir) / "transcriber_config.json"
+                if tc_file.exists():
+                    tc = json.loads(tc_file.read_text(encoding="utf-8"))
+                    model_size = tc.get("whisper_model_size", model_size)
+                self.transcriber = AutoTranscriber(local=FasterWhisperTranscriber(
+                    model_size=model_size, device=settings.whisper_device))
 
-                    # 从 transcriber_config.json 读取用户选择的模型配置
-                    model_size = settings.whisper_model_size  # 默认值
-                    transcriber_type = "fast-whisper"
-                    try:
-                        import json
-                        tc_file = Path(settings.data_dir) / "transcriber_config.json"
-                        if tc_file.exists():
-                            tc = json.loads(tc_file.read_text(encoding="utf-8"))
-                            model_size = tc.get("whisper_model_size", model_size)
-                            transcriber_type = tc.get("transcriber_type", transcriber_type)
-                    except Exception:
-                        pass
-
-                    if transcriber_type == "fast-whisper":
-                        local = FasterWhisperTranscriber(
-                            model_size=model_size,
-                            device=settings.whisper_device,
-                        )
-                        self.transcriber = AutoTranscriber(local=local)
-                    else:
-                        self.transcriber = AutoTranscriber()
-                except Exception:
-                    self.transcriber = MockTranscriber()
-
-        # ── VectorStore: 暂时用 MockStore（ChromaDB 在 Python 3.13 下会崩溃） ──
-        from app.store.mock import MockStore
+        # ?? VectorStore: ChromaDB ??? ??
         if vector_store:
             self.vector_store = vector_store
         else:
-            try:
-                from app.store.vector import VectorStore
-                self.vector_store = VectorStore()
-            except Exception as e:
-                logger.warning(f"VectorStore 初始化失败，降级到 MockStore: {e}")
-                self.vector_store = MockStore()
+            from app.store.vector import VectorStore
+            self.vector_store = VectorStore()
 
-        # ── Store: 配合 VectorStore 使用 ──
-        self.store = store or MockStore()
+        # ?? Store: ?? VectorStore ?? ??
+        self.store = store or self.vector_store
 
-        # ── Retriever: 有真实 VectorStore 则用 HybridRetriever ──
+        # ?? Retriever: HybridRetriever??? ChromaDB ????? ??
         if retriever:
             self.retriever = retriever
-        elif not isinstance(self.vector_store, MockStore):
+        else:
             from app.retriever.hybrid import HybridRetriever
             self.retriever = HybridRetriever(self.vector_store)
-        else:
-            self.retriever = MockRetriever(self.vector_store)
 
-        # ── QAEngine: 有真实 Retriever 则用真实 QA ──
+        # ?? QAEngine: ??????? ??
         if qa:
             self.qa = qa
-        elif not isinstance(self.retriever, MockRetriever):
+        else:
             from app.qa.engine import QAEngine
             self.qa = QAEngine(self.retriever)
-        else:
-            self.qa = MockQA(self.llm)
 
     async def start_task(self, source_url: str, options: dict[str, Any] | None = None) -> PipelineTask:
         "提交一个视频处理任务，立即返回。"
@@ -301,6 +263,26 @@ class PipelineOrchestrator:
     async def answer_question(self, request: QARequest) -> QAResponse:
         "基于笔记内容回答问题。"
         context = await self.retriever.retrieve(request.question, request.note_id, request.top_k)
+        # HybridRetriever 返回的是 dict，需要转换为 SearchResult
+        if context and isinstance(context[0], dict):
+            from app.schemas.chunk import SearchResult, ChunkBase
+            converted = []
+            for item in context:
+                meta = item.get("metadata", {})
+                converted.append(SearchResult(
+                    chunk=ChunkBase(
+                        chunk_id=item.get("id", ""),
+                        video_id=0,
+                        note_id=hash(meta.get("video_id", "")) % 10000,
+                        chunk_index=meta.get("chunk_index", 0),
+                        section_title=meta.get("section_title"),
+                        content=item.get("document", ""),
+                        start_time=meta.get("start_time"),
+                        end_time=meta.get("end_time"),
+                    ),
+                    score=1.0 - item.get("distance", 0),
+                ))
+            context = converted
         answer = await self.qa.answer(request.question, context)
         return QAResponse(answer=answer, sources=context)
 

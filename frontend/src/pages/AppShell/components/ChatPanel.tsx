@@ -152,30 +152,24 @@ export default function ChatPanel({
       }
 
       addMessage(taskId, { role: 'user', content: question })
-      addMessage(taskId, { role: 'assistant', content: '' })
       setInput('')
       setLoading(true)
-      let answer = ''
+      let history = messages.map(m => ({ role: m.role, content: m.content }))
 
       try {
-        await askQuestionStream(
-          {
-            task_id: taskId,
-            video_id: videoId,
-            question,
-            history: messages.map(m => ({ role: m.role, content: m.content })),
-            provider_id: providerId,
-            model_name: modelName,
-          },
-          (token) => {
-            answer += token
-            updateLastMessage(taskId, answer)
-          },
-          (sources) => {
-            updateLastMessage(taskId, answer, sources)
-          },
-          () => {},
-        )
+        const res = await askQuestion({
+          task_id: taskId,
+          video_id: videoId,
+          question,
+          history,
+          provider_id: providerId,
+          model_name: modelName,
+        })
+        addMessage(taskId, {
+          role: 'assistant',
+          content: res.answer,
+          sources: res.sources,
+        })
       } catch {
         toast.error('问答请求失败')
       } finally {
