@@ -14,13 +14,22 @@ const items: { view: ShellView; label: string; icon: ComponentType<{ size?: numb
   { view: 'library', label: '知识库', icon: Library },
 ]
 
+function SidebarTooltip({ label }: { label: string }) {
+  return (
+    <span className="pointer-events-none absolute left-[calc(100%+12px)] top-1/2 z-[100] -translate-y-1/2 translate-x-1 whitespace-nowrap rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-neutral-100 opacity-0 shadow-2xl shadow-black/50 transition-[opacity,transform] duration-150 group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100">
+      <span className="absolute left-[-4px] top-1/2 size-2 -translate-y-1/2 rotate-45 border-b border-l border-neutral-700 bg-neutral-900" />
+      {label}
+    </span>
+  )
+}
+
 export default function ShellSidebar({
   currentView,
   onChangeView,
   onPreviewView,
 }: ShellSidebarProps) {
   return (
-    <aside className="z-10 flex h-full w-[68px] shrink-0 flex-col items-center border-r border-neutral-800 bg-[#111111] py-4">
+    <aside className="relative z-50 flex h-full w-[68px] shrink-0 flex-col items-center overflow-visible border-r border-neutral-800 bg-[#111111] py-4">
       <div className="mt-4 flex w-full flex-col items-center gap-4">
         {items.map(item => {
           const Icon = item.icon
@@ -45,9 +54,7 @@ export default function ShellSidebar({
               aria-label={item.label}
             >
               <Icon size={22} />
-              <span className="pointer-events-none absolute left-14 z-50 whitespace-nowrap rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-200 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
-                {item.label}
-              </span>
+              <SidebarTooltip label={item.label} />
             </button>
           )
         })}
@@ -67,9 +74,7 @@ export default function ShellSidebar({
           aria-label="设置"
         >
           <Settings size={20} />
-          <span className="pointer-events-none absolute left-14 z-50 whitespace-nowrap rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-200 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
-            设置
-          </span>
+          <SidebarTooltip label="设置" />
         </button>
       </div>
     </aside>

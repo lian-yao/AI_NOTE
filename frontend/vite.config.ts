@@ -81,6 +81,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: path => path.replace(/^\/static/, '/static'),
         },
+        '/image_proxy': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+          rewrite: path => path.replace(/^\/image_proxy/, '/image_proxy'),
+        },
       },
     },
   }
