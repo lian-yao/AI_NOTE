@@ -26,7 +26,7 @@ def _configured_model_size() -> str:
             configured = str(data.get("whisper_model_size") or configured)
         except Exception:
             pass
-    return configured if configured in {"tiny", "base", "small", "medium", "large-v3"} else "tiny"
+    return configured if configured in {"tiny", "base", "small", "medium", "large-v3", "turbo"} else "tiny"
 
 
 class AutoTranscriber:
