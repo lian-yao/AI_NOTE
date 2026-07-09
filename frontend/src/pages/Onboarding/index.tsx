@@ -52,8 +52,7 @@ import {
 import { isSkippedApiResult } from '@/services/fallback'
 import { updateModelUsageConfig } from '@/services/system'
 import { getApiBaseURL } from '@/utils/api'
-
-const ONBOARD_KEY = 'ai-video-onboarded'
+import { markOnboardingComplete } from '@/utils/onboarding'
 
 const steps = [
   { id: 'backend', label: '后端连通', title: '检测本地后端', icon: Server },
@@ -135,7 +134,7 @@ const modelFallbackMeta: Record<string, { size: string; repo: string }> = {
 }
 
 function markOnboarded() {
-  localStorage.setItem(ONBOARD_KEY, '1')
+  markOnboardingComplete()
 }
 
 function errText(error: unknown): string {

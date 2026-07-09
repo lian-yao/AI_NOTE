@@ -1,14 +1,14 @@
-use tauri::{Manager, Emitter, State};
-use tauri_plugin_shell::ShellExt;
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
-use std::env;
+use serde::Serialize;
 use std::collections::HashMap;
+use std::env;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use serde::Serialize;
+use tauri::{Emitter, Manager, State};
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::ShellExt;
 
 // Sidecar 启动期内前端不该看到「加载中」无限转。
 // 总等待上限 = 启动期 PyInstaller 解压 + uvicorn bind 时间的最坏估计，
@@ -16,14 +16,29 @@ use serde::Serialize;
 const BACKEND_STARTUP_TIMEOUT_SECS: u64 = 45;
 const BACKEND_DEFAULT_PORT: u16 = 8483;
 
-// Sidecar 子进程句柄，用 Mutex 包裹方便 restart 时杀旧进程
-struct SidecarHandle(Mutex<Option<CommandChild>>);
+// Sidecar 子进程句柄和 PID，用 Mutex 包裹方便关闭 / restart 时杀旧进程树。
+struct BackendSidecar {
+    child: CommandChild,
+    pid: u32,
+}
+
+struct SidecarHandle(Mutex<Option<BackendSidecar>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let app_handle = window.app_handle().clone();
+                    kill_backend_sidecar(&app_handle);
+                    app_handle.exit(0);
+                }
+            }
+        })
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -58,7 +73,11 @@ pub fn run() {
                 eprintln!("Sidecar 启动失败: {}", e);
                 e
             })?;
-            app.manage(SidecarHandle(Mutex::new(Some(child))));
+            let pid = child.pid();
+            app.manage(SidecarHandle(Mutex::new(Some(BackendSidecar {
+                child,
+                pid,
+            }))));
 
             // 启动 ready probe：异步轮询本地 BACKEND_PORT 是否在监听，
             // 解决前端 useCheckBackend 在 PyInstaller 解压期瞎猜后端起没起的问题。
@@ -95,13 +114,50 @@ pub fn run() {
 fn kill_backend_sidecar(app_handle: &tauri::AppHandle) {
     if let Some(state) = app_handle.try_state::<SidecarHandle>() {
         if let Ok(mut guard) = state.0.lock() {
-            if let Some(child) = guard.take() {
-                eprintln!("[shutdown] killing backend sidecar before app exit");
-                let _ = child.kill();
+            if let Some(sidecar) = guard.take() {
+                terminate_backend_sidecar(sidecar, "shutdown");
             }
         }
     }
 }
+
+fn terminate_backend_sidecar(sidecar: BackendSidecar, reason: &str) {
+    eprintln!(
+        "[{}] terminating backend sidecar process tree, pid={}",
+        reason, sidecar.pid
+    );
+    kill_backend_process_tree(sidecar.pid);
+    let _ = sidecar.child.kill();
+}
+
+#[cfg(target_os = "windows")]
+fn kill_backend_process_tree(pid: u32) {
+    use std::process::Command;
+
+    let pid_arg = pid.to_string();
+    match Command::new("taskkill")
+        .args(["/PID", &pid_arg, "/T", "/F"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "[shutdown] taskkill failed for backend pid={}, status={}, stderr={}",
+                pid, output.status, stderr
+            );
+        }
+        Err(err) => {
+            eprintln!(
+                "[shutdown] failed to run taskkill for backend pid={}: {}",
+                pid, err
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_backend_process_tree(_pid: u32) {}
 
 // 获取额外的二进制路径
 fn get_additional_binary_paths() -> Vec<String> {
@@ -135,7 +191,11 @@ fn get_additional_binary_paths() -> Vec<String> {
 
 // 增强 PATH 环境变量
 fn enhance_path_variable(current_path: &str, additional_paths: &[String]) -> String {
-    let path_separator = if cfg!(target_os = "windows") { ";" } else { ":" };
+    let path_separator = if cfg!(target_os = "windows") {
+        ";"
+    } else {
+        ":"
+    };
 
     let mut paths: Vec<String> = additional_paths.to_vec();
 
@@ -196,12 +256,20 @@ fn find_executable_path(executable_name: String) -> Option<String> {
     use std::process::Command;
 
     // 首先尝试直接执行
-    if Command::new(&executable_name).arg("--version").output().is_ok() {
+    if Command::new(&executable_name)
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         return Some(executable_name);
     }
 
     // 使用 which/where 命令查找
-    let which_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+    let which_cmd = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
 
     if let Ok(output) = Command::new(which_cmd).arg(&executable_name).output() {
         if output.status.success() {
@@ -231,10 +299,7 @@ fn find_executable_path(executable_name: String) -> Option<String> {
 
 // Tauri 命令：使用完整环境变量运行命令
 #[tauri::command]
-async fn run_command_with_env(
-    program: String,
-    args: Vec<String>
-) -> Result<String, String> {
+async fn run_command_with_env(program: String, args: Vec<String>) -> Result<String, String> {
     use std::process::Command;
 
     let mut cmd = Command::new(&program);
@@ -259,7 +324,7 @@ async fn run_command_with_env(
                 Err(String::from_utf8_lossy(&output.stderr).to_string())
             }
         }
-        Err(e) => Err(format!("Failed to execute {}: {}", program, e))
+        Err(e) => Err(format!("Failed to execute {}: {}", program, e)),
     }
 }
 
@@ -395,16 +460,26 @@ fn restart_backend_sidecar(
     }
     // 1. 拿出旧 child 并 kill（kill 失败也继续，可能进程已经退了）
     {
-        let mut guard = state.0.lock().map_err(|e| format!("锁 sidecar state 失败: {}", e))?;
-        if let Some(child) = guard.take() {
-            let _ = child.kill();
+        let mut guard = state
+            .0
+            .lock()
+            .map_err(|e| format!("锁 sidecar state 失败: {}", e))?;
+        if let Some(sidecar) = guard.take() {
+            terminate_backend_sidecar(sidecar, "restart");
         }
     }
     // 2. 重新 spawn
     let new_child = spawn_backend_sidecar(&app)?;
+    let new_pid = new_child.pid();
     {
-        let mut guard = state.0.lock().map_err(|e| format!("锁 sidecar state 失败: {}", e))?;
-        *guard = Some(new_child);
+        let mut guard = state
+            .0
+            .lock()
+            .map_err(|e| format!("锁 sidecar state 失败: {}", e))?;
+        *guard = Some(BackendSidecar {
+            child: new_child,
+            pid: new_pid,
+        });
     }
     // 3. emit 一个事件让前端知道已重启
     if let Some(window) = app.get_webview_window("main") {
@@ -427,7 +502,9 @@ fn spawn_backend_ready_probe(app: tauri::AppHandle) {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(BACKEND_DEFAULT_PORT);
-    let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().expect("invalid backend addr");
+    let addr: SocketAddr = format!("127.0.0.1:{}", port)
+        .parse()
+        .expect("invalid backend addr");
     let timeout = Duration::from_secs(BACKEND_STARTUP_TIMEOUT_SECS);
 
     std::thread::spawn(move || {
@@ -544,7 +621,7 @@ fn get_install_path_diagnostics() -> InstallPathDiagnostics {
 #[tauri::command]
 async fn update_sidecar_environment(
     app_handle: tauri::AppHandle,
-    additional_env_vars: HashMap<String, String>
+    additional_env_vars: HashMap<String, String>,
 ) -> Result<(), String> {
     // 这个函数可以用来在运行时更新环境变量
     // 注意：这需要重启 sidecar 才能生效

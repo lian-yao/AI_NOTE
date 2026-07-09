@@ -9,6 +9,7 @@ import StartupBanner from '@/components/SystemDiagnostic/StartupBanner'
 import BackendHealthIndicator from '@/components/BackendHealth/BackendHealthIndicator'
 import Index from '@/pages/Index.tsx'
 import AppShell from '@/pages/AppShell'
+import { hasCompletedOnboarding } from '@/utils/onboarding'
 
 // 非首屏页面使用 React.lazy 按需加载
 const Onboarding = lazy(() => import('@/pages/Onboarding'))
@@ -18,7 +19,7 @@ function OnboardingGuard({ children }: { children: React.ReactNode }) {
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
   // 仅在 Tauri 桌面端拦截；纯 web 端不打扰用户
   if (!isTauri) return <>{children}</>
-  if (localStorage.getItem('ai-video-onboarded') !== '1') return <Navigate to="/onboarding" replace />
+  if (!hasCompletedOnboarding()) return <Navigate to="/onboarding" replace />
   return <>{children}</>
 }
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'))
