@@ -9,11 +9,11 @@ class MockLLM:
     async def chat(self, messages: list[dict], **kwargs) -> str:
         return (
             "## 摘要\n\n"
-            "这段视频讨论了人工智能与深度学习的发展。\n\n"
+            "生成失败。\n\n"
             "## 要点\n\n"
-            "- AI 正在改变世界\n"
-            "- 深度学习可理解图像与语言\n"
-            "- 未来十年将有更多突破"
+            "- 检查apikey是否可以使用\n"
+            "- 失败\n"
+
         )
 
     async def stream_chat(self, messages: list[dict], **kwargs):

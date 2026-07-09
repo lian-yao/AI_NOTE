@@ -32,3 +32,4 @@ Thumbs.db
 
 # Docker
 *.log
+/docs/项目介绍文档.md

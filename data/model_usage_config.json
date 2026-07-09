@@ -1,6 +1,6 @@
 {
-  "qa_provider_id": "d95159ea-58b0-4e7d-a34a-fa534186ba78",
-  "qa_model_name": "deepseek-v4-flash",
-  "embedding_provider_id": "cd265734-d533-4696-b77d-3452ce2ff08f",
-  "embedding_model_name": "Qwen/Qwen3-Embedding-8B"
+  "qa_provider_id": "",
+  "qa_model_name": "",
+  "embedding_provider_id": "",
+  "embedding_model_name": ""
 }

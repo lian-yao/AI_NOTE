@@ -73,13 +73,13 @@ cd ..
 
 ### 4. 获取 B 站 Cookie（可选，用于下载高清视频）
 
-登录 B 站，按 F12 打开开发者工具 → 控制台 → 输入以下命令获取 Cookie：
 
-```javascript
-document.cookie
-```
+登录 B 站，按 F12 打开开发者工具 →app应用 → http.blibli.com->复制 Cookie：
+
+
 
 将返回值保存到设置页的「平台数据」中，或写入 `data/cookies.txt`。
+写入 `data/cookies.txt` 注意格式，可以直接让AI帮生成对应的格式
 
 ### 5. 一键启动
 
