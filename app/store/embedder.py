@@ -51,17 +51,20 @@ class EmbeddingClient:
                 "Embedding API Key 未配置，请设置 VN_EMBEDDING_API_KEY 或 VN_TONGYI_API_KEY"
             )
         if self.openai_compatible:
+            results = []
             async with httpx.AsyncClient(timeout=120, verify=False) as client:
-                response = await client.post(
-                    self.base_url,
-                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                    json={"model": self.model, "input": texts},
-                )
-                response.raise_for_status()
-                data = response.json()
-                items = data.get("data") or []
-                items = sorted(items, key=lambda item: item.get("index", 0))
-                return [item["embedding"] for item in items]
+                for text in texts:
+                    response = await client.post(
+                        self.base_url,
+                        headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                        json={"model": self.model, "input": text},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    items = data.get("data") or []
+                    if items:
+                        results.append(items[0].get("embedding", []))
+            return results
 
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(

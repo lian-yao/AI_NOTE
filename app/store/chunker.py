@@ -3,7 +3,7 @@ import re
 from typing import List, Dict, Any
 from app.note.timeline import extract_timeline_sections, seconds_from_timestamp
 
-def semantic_chunk(note_markdown: str, min_chunk_size: int = 100, overlap: int = 50) -> List[Dict[str, Any]]:
+def semantic_chunk(note_markdown: str, min_chunk_size: int = 100, max_chunk_size: int = 2000, overlap: int = 50) -> List[Dict[str, Any]]:
     """按 ## 标题分割，合并小块，添加重叠"""
     timeline_sections = extract_timeline_sections(note_markdown)
     if timeline_sections:
@@ -45,6 +45,24 @@ def semantic_chunk(note_markdown: str, min_chunk_size: int = 100, overlap: int =
             current_chunk["content"] += line + "\n"
     if current_chunk["content"]:
         chunks.append(current_chunk)
+
+    # 拆分超大块（按双换行分段）
+    split_chunks = []
+    for chunk in chunks:
+        content = chunk["content"]
+        if len(content) > max_chunk_size:
+            paragraphs = re.split(r"\n\s*\n", content)
+            part = ""
+            for para in paragraphs:
+                if len(part) + len(para) > max_chunk_size and part:
+                    split_chunks.append({"title": chunk["title"], "content": part, "start_time": chunk["start_time"], "end_time": chunk["end_time"]})
+                    part = ""
+                part += para + "\n\n"
+            if part:
+                split_chunks.append({"title": chunk["title"], "content": part, "start_time": chunk["start_time"], "end_time": chunk["end_time"]})
+        else:
+            split_chunks.append(chunk)
+    chunks = split_chunks
 
     # 合并小块
     merged = []
