@@ -1,0 +1,6 @@
+{
+  "qa_provider_id": "deepseek",
+  "qa_model_name": "deepseek-chat",
+  "embedding_provider_id": "",
+  "embedding_model_name": ""
+}
