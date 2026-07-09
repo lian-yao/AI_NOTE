@@ -45,7 +45,7 @@ def _forward_to_ws(event: PipelineEvent):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     #  启动逻辑
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(settings.data_dir, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     event_bus = EventBus()
     app.state.orchestrator = PipelineOrchestrator()
@@ -85,6 +85,11 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
+    return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/api/sys_check")
+async def sys_check():
     return {"status": "ok", "version": "0.1.0"}
 
 
@@ -142,4 +147,5 @@ if __name__ == "__main__":
     import uvicorn
     # loop="asyncio" 让 uvicorn 使用 Python 默认事件循环策略，
     # 而非 Windows 上硬编码 SelectorEventLoop（不支持子进程管道）
-    uvicorn.run(app, host="127.0.0.1", port=8000, loop="asyncio")
+    backend_port = int(os.environ.get("BACKEND_PORT", "8000"))
+    uvicorn.run(app, host="127.0.0.1", port=backend_port, loop="asyncio")

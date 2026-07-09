@@ -61,6 +61,39 @@ export interface SystemStats {
   disk_free_bytes: number
 }
 
+export type StorageCacheKey = 'downloads' | 'transcripts' | 'covers' | 'temp'
+
+export interface StoragePathConfig {
+  dataRootPath: string
+  cacheRootPath: string
+  cacheDirectories: Record<StorageCacheKey, string>
+  lastCacheClearedAt: string | null
+}
+
+export interface StorageCacheStat {
+  key: StorageCacheKey
+  path: string
+  bytes: number
+  exists: boolean
+  paths: string[]
+}
+
+export interface StorageStats {
+  config: StoragePathConfig
+  data_root_path: string
+  data_root_bytes: number
+  cache_bytes: number
+  disk_free_bytes: number
+  cache: StorageCacheStat[]
+}
+
+export interface ClearStorageCacheResult {
+  freed_bytes: number
+  cleared_keys: StorageCacheKey[]
+  config: StoragePathConfig
+  stats: StorageStats
+}
+
 export const getSystemConfig = async (opts?: CallOpts): Promise<SystemConfig> => {
   return await request.get('/system/config', cfg(opts))
 }
@@ -89,6 +122,26 @@ export const updateModelUsageConfig = async (
 
 export const getSystemStats = async (opts?: CallOpts): Promise<SystemStats> => {
   return await request.get('/system/stats', cfg(opts))
+}
+
+export const getStorageConfig = async (opts?: CallOpts): Promise<StoragePathConfig> => {
+  return await request.get('/system/storage/config', cfg(opts))
+}
+
+export const updateStorageConfig = async (
+  data: StoragePathConfig,
+): Promise<StoragePathConfig> => {
+  return await request.put('/system/storage/config', data)
+}
+
+export const getStorageStats = async (opts?: CallOpts): Promise<StorageStats> => {
+  return await request.get('/system/storage/stats', cfg(opts))
+}
+
+export const clearStorageCache = async (
+  keys: StorageCacheKey[],
+): Promise<ClearStorageCacheResult> => {
+  return await request.post('/system/storage/clear', { keys })
 }
 
 export interface DeployStatus {

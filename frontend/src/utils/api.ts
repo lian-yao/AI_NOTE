@@ -1,4 +1,5 @@
 const API_PREFIX = '/api/v1'
+const DEFAULT_TAURI_BACKEND_BASE_URL = 'http://127.0.0.1:8483'
 
 export function normalizeApiBaseURL(rawBaseURL?: string): string {
   const baseURL = (rawBaseURL || '').trim().replace(/\/+$/, '')
@@ -11,5 +12,14 @@ export function normalizeApiBaseURL(rawBaseURL?: string): string {
 }
 
 export function getApiBaseURL(): string {
-  return normalizeApiBaseURL(import.meta.env.VITE_API_BASE_URL)
+  const envBaseURL = import.meta.env.VITE_API_BASE_URL
+  if (envBaseURL) return normalizeApiBaseURL(envBaseURL)
+
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    return normalizeApiBaseURL(
+      import.meta.env.VITE_TAURI_BACKEND_BASE_URL || DEFAULT_TAURI_BACKEND_BASE_URL,
+    )
+  }
+
+  return normalizeApiBaseURL()
 }

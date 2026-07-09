@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,19 @@ _MODEL_REPO_MAP: dict[str, str] = {
     "large-v3": "Systran/faster-whisper-large-v3",
     "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
 }
+
+# Approximate download/cache sizes. Hugging Face revisions can vary slightly,
+# so the UI labels these as estimates and shows actual disk usage when cached.
+_MODEL_ESTIMATED_SIZE_MB: dict[str, int] = {
+    "tiny": 75,
+    "base": 145,
+    "small": 466,
+    "medium": 1500,
+    "large-v3": 3100,
+    "turbo": 1600,
+}
+
+_MODEL_WEIGHT_SUFFIXES = (".bin", ".safetensors")
 
 # ── 所有已知的模型大小 ──
 _ALL_MODEL_SIZES: list[str] = ["tiny", "base", "small", "medium", "large-v3", "turbo"]
@@ -55,40 +69,137 @@ def _get_hf_hub_cache() -> Path:
     return Path(hf_home) / "hub"
 
 
+def _format_estimated_size(model_size: str) -> str | None:
+    size_mb = _MODEL_ESTIMATED_SIZE_MB.get(model_size)
+    if not size_mb:
+        return None
+    if size_mb >= 1024:
+        return f"约 {size_mb / 1024:.1f} GB"
+    return f"约 {size_mb} MB"
+
+
+def _repo_cache_dir(repo_id: str) -> Path:
+    repo_dir_name = repo_id.replace("/", "--")
+    if not repo_dir_name.startswith("models--"):
+        repo_dir_name = f"models--{repo_dir_name}"
+    return _get_hf_hub_cache() / repo_dir_name
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        if item.is_file():
+            try:
+                total += item.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _is_model_weight_name(name: str) -> bool:
+    lower = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if lower.endswith(".incomplete"):
+        return False
+    return lower.endswith(_MODEL_WEIGHT_SUFFIXES)
+
+
+def _cache_entry(
+    *,
+    downloaded: bool,
+    repo_path: Path,
+    downloaded_size_bytes: int | None = None,
+) -> dict[str, Any]:
+    cache_size = _dir_size(repo_path) if repo_path.exists() else 0
+    partial = bool(cache_size and not downloaded)
+    return {
+        "downloaded": downloaded,
+        "downloaded_size_bytes": downloaded_size_bytes if downloaded else None,
+        "cache_size_bytes": cache_size or downloaded_size_bytes,
+        "partial": partial,
+        "partial_size_bytes": cache_size if partial else None,
+        "cache_path": str(repo_path),
+    }
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def scan_whisper_cache() -> dict[str, dict[str, Any]]:
+    """Scan HuggingFace cache once and return downloaded Whisper models."""
+    repo_to_size = {repo_id: size for size, repo_id in _MODEL_REPO_MAP.items()}
+    found: dict[str, dict[str, Any]] = {}
+
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        cache_info = scan_cache_dir()
+        for repo in cache_info.repos:
+            model_size = repo_to_size.get(repo.repo_id)
+            if not model_size or not repo.revisions:
+                continue
+
+            has_model_weights = any(
+                _is_model_weight_name(str(getattr(file, "file_name", "")))
+                for rev in repo.revisions
+                for file in rev.files
+            )
+
+            size_on_disk = getattr(repo, "size_on_disk", None)
+            if size_on_disk is None:
+                size_on_disk = sum(
+                    int(getattr(rev, "size_on_disk", 0) or 0)
+                    for rev in repo.revisions
+                )
+
+            repo_path = getattr(repo, "repo_path", None)
+            if not repo_path:
+                repo_path = _repo_cache_dir(repo.repo_id)
+            found[model_size] = _cache_entry(
+                downloaded=has_model_weights,
+                downloaded_size_bytes=size_on_disk or None,
+                repo_path=Path(repo_path),
+            )
+    except Exception as e:
+        logger.warning(f"扫描 HF 缓存失败: {e}")
+
+    # Fallback/manual pass covers older huggingface_hub versions and custom HF_HOME layouts.
+    for model_size, repo_id in _MODEL_REPO_MAP.items():
+        if model_size in found:
+            continue
+
+        repo_dir = _repo_cache_dir(repo_id)
+        if not repo_dir.exists():
+            continue
+
+        has_model_file = any(
+            path.is_file() and _is_model_weight_name(path.name)
+            for path in repo_dir.rglob("*")
+        )
+        cache_size = _dir_size(repo_dir)
+        if not has_model_file and cache_size <= 0:
+            continue
+
+        found[model_size] = _cache_entry(
+            downloaded=has_model_file,
+            downloaded_size_bytes=cache_size if has_model_file else None,
+            repo_path=repo_dir,
+        )
+
+    return found
+
+
 def check_model_downloaded(model_size: str) -> bool:
     """检查指定大小的模型是否已下载到 HF 缓存。
 
     使用 huggingface_hub.scan_cache_dir 扫描缓存，
     匹配 repo_id 对应的模型。
     """
-    repo_id = _MODEL_REPO_MAP.get(model_size)
-    if not repo_id:
-        return False
-
-    try:
-        from huggingface_hub import scan_cache_dir
-        cache_info = scan_cache_dir()
-        for repo in cache_info.repos:
-            if repo.repo_id == repo_id and repo.revisions:
-                # 检查是否有实际文件（不只是 refs）
-                for rev in repo.revisions:
-                    if rev.files and len(rev.files) > 0:
-                        return True
-    except Exception as e:
-        logger.warning(f"扫描 HF 缓存失败: {e}")
-
-    # 回退：手动检查目录
-    cache_dir = _get_hf_hub_cache()
-    repo_dir_name = repo_id.replace("/", "--")
-    if repo_dir_name.startswith("models--"):
-        repo_dir_name = repo_dir_name  # already in correct format
-    else:
-        repo_dir_name = f"models--{repo_dir_name}"
-    repo_dir = cache_dir / repo_dir_name
-    if repo_dir.exists() and any(repo_dir.rglob("*.bin")):
-        return True
-
-    return False
+    return model_size in scan_whisper_cache()
 
 
 def get_models_status() -> list[dict[str, Any]]:
@@ -98,14 +209,24 @@ def get_models_status() -> list[dict[str, Any]]:
         [{model_size, downloaded, downloading, failed, error, progress}, ...]
     """
     result: list[dict[str, Any]] = []
+    cached_models = scan_whisper_cache()
     for size in _ALL_MODEL_SIZES:
         ds = _downloads.get(size)
         is_downloading = ds.downloading if ds else False
         # 正在下载时，即使缓存中已有部分文件也不视为"已下载"
-        is_downloaded = False if is_downloading else check_model_downloaded(size)
+        cache_info = cached_models.get(size, {})
+        is_downloaded = False if is_downloading else bool(cache_info.get("downloaded"))
 
         status: dict[str, Any] = {
             "model_size": size,
+            "repo_id": _MODEL_REPO_MAP.get(size),
+            "estimated_size_mb": _MODEL_ESTIMATED_SIZE_MB.get(size),
+            "estimated_size_label": _format_estimated_size(size),
+            "downloaded_size_bytes": cache_info.get("downloaded_size_bytes"),
+            "cache_size_bytes": cache_info.get("cache_size_bytes"),
+            "partial_size_bytes": cache_info.get("partial_size_bytes"),
+            "cache_path": cache_info.get("cache_path"),
+            "partial": bool(cache_info.get("partial")),
             "downloaded": is_downloaded,
             "downloading": is_downloading,
             "failed": ds.failed if ds else False,
@@ -122,9 +243,18 @@ def get_model_status(model_size: str) -> dict[str, Any] | None:
     if model_size not in _ALL_MODEL_SIZES:
         return None
     ds = _downloads.get(model_size)
-    is_downloaded = check_model_downloaded(model_size)
+    cache_info = scan_whisper_cache().get(model_size, {})
+    is_downloaded = bool(cache_info.get("downloaded"))
     status: dict[str, Any] = {
         "model_size": model_size,
+        "repo_id": _MODEL_REPO_MAP.get(model_size),
+        "estimated_size_mb": _MODEL_ESTIMATED_SIZE_MB.get(model_size),
+        "estimated_size_label": _format_estimated_size(model_size),
+        "downloaded_size_bytes": cache_info.get("downloaded_size_bytes"),
+        "cache_size_bytes": cache_info.get("cache_size_bytes"),
+        "partial_size_bytes": cache_info.get("partial_size_bytes"),
+        "cache_path": cache_info.get("cache_path"),
+        "partial": bool(cache_info.get("partial")),
         "downloaded": is_downloaded,
         "downloading": ds.downloading if ds else False,
         "failed": ds.failed if ds else False,
@@ -148,6 +278,88 @@ def get_download_progress(model_size: str) -> dict[str, Any] | None:
         "failed": ds.failed,
         "error": ds.error,
         "elapsed_seconds": (time.time() - ds.started_at) if ds.started_at else 0,
+    }
+
+
+def delete_model_cache(model_size: str) -> dict[str, Any]:
+    """删除指定 Whisper 模型的 HuggingFace 本地缓存。"""
+    if model_size not in _MODEL_REPO_MAP:
+        return {
+            "status": "error",
+            "model_size": model_size,
+            "message": f"未知的模型大小: {model_size}",
+        }
+
+    ds = _downloads.get(model_size)
+    if ds and ds.downloading:
+        return {
+            "status": "downloading",
+            "model_size": model_size,
+            "message": f"模型 {model_size} 正在下载中，不能删除缓存",
+        }
+
+    cache_info = scan_whisper_cache().get(model_size, {})
+    cache_path_value = cache_info.get("cache_path")
+    cache_path = Path(cache_path_value) if cache_path_value else _repo_cache_dir(_MODEL_REPO_MAP[model_size])
+    hub_cache = _get_hf_hub_cache()
+
+    if not cache_path.exists():
+        return {
+            "status": "not_found",
+            "model_size": model_size,
+            "deleted": False,
+            "freed_bytes": 0,
+            "message": f"模型 {model_size} 未找到本地缓存",
+        }
+
+    if cache_path.is_symlink() or not cache_path.is_dir() or not _is_relative_to(cache_path, hub_cache):
+        return {
+            "status": "error",
+            "model_size": model_size,
+            "deleted": False,
+            "freed_bytes": 0,
+            "cache_path": str(cache_path),
+            "message": f"缓存路径不安全，已拒绝删除: {cache_path}",
+        }
+
+    expected_dir = _repo_cache_dir(_MODEL_REPO_MAP[model_size]).resolve()
+    try:
+        resolved_cache_path = cache_path.resolve()
+    except OSError:
+        resolved_cache_path = cache_path
+    if resolved_cache_path != expected_dir:
+        return {
+            "status": "error",
+            "model_size": model_size,
+            "deleted": False,
+            "freed_bytes": 0,
+            "cache_path": str(cache_path),
+            "message": f"缓存路径与模型仓库不匹配，已拒绝删除: {cache_path}",
+        }
+
+    freed = _dir_size(cache_path)
+    try:
+        shutil.rmtree(cache_path)
+    except OSError as exc:
+        logger.warning(f"删除模型缓存失败 {model_size}: {exc}")
+        return {
+            "status": "error",
+            "model_size": model_size,
+            "deleted": False,
+            "freed_bytes": 0,
+            "cache_path": str(cache_path),
+            "message": f"删除模型缓存失败: {exc}",
+        }
+
+    _downloads.pop(model_size, None)
+    logger.info(f"已删除模型缓存: {model_size} path={cache_path} freed={freed}")
+    return {
+        "status": "deleted",
+        "model_size": model_size,
+        "deleted": True,
+        "freed_bytes": freed,
+        "cache_path": str(cache_path),
+        "message": f"已删除模型 {model_size} 的本地缓存",
     }
 
 

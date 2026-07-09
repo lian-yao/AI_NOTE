@@ -10,6 +10,7 @@ from app.transcriber.model_manager import (
     get_models_status,
     start_download,
     get_download_progress,
+    delete_model_cache,
     reset_download,
     _ALL_MODEL_SIZES,
 )
@@ -18,9 +19,8 @@ router = APIRouter(prefix="/transcribers", tags=["transcribers"])
 
 AVAILABLE_TYPES = [
     {"value": "fast-whisper", "label": "fast-whisper"},
-    {"value": "mlx-whisper", "label": "mlx-whisper"},
-    {"value": "groq", "label": "Groq"},
 ]
+_AVAILABLE_TYPE_VALUES = {item["value"] for item in AVAILABLE_TYPES}
 WHISPER_MODEL_SIZES = _ALL_MODEL_SIZES
 
 _CONFIG_FILE = Path(settings.data_dir) / "transcriber_config.json"
@@ -39,6 +39,8 @@ def _load_config() -> dict:
             default.update(loaded)
         except Exception:
             pass
+    if default.get("transcriber_type") not in _AVAILABLE_TYPE_VALUES:
+        default["transcriber_type"] = "fast-whisper"
     return default
 
 
@@ -84,7 +86,7 @@ def update_transcriber_config(body: TranscriberConfigUpdate, request: Request):
     updated = []
     old_size = _runtime_config.get("whisper_model_size")
     old_device = _runtime_config.get("whisper_device")
-    if body.transcriber_type:
+    if body.transcriber_type and body.transcriber_type in _AVAILABLE_TYPE_VALUES:
         _runtime_config["transcriber_type"] = body.transcriber_type
         updated.append("transcriber_type")
     if body.whisper_model_size:
@@ -173,6 +175,12 @@ def reset_model_download(model_size: str):
     """重置下载状态（用于重试失败的下载）。"""
     ok = reset_download(model_size)
     return {"model_size": model_size, "reset": ok}
+
+
+@router.delete("/models/{model_size}/cache")
+def delete_model_cache_api(model_size: str):
+    """删除指定 Whisper 模型的 HuggingFace 本地缓存。"""
+    return delete_model_cache(model_size)
 
 
 # ── Whisper 自定义模型管理 ──

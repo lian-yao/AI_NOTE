@@ -6,6 +6,9 @@ import shutil
 import subprocess
 import threading
 import uuid
+import sys
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,6 +18,7 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.paths import project_root
 from app.core.model_usage import (
     load_model_usage_config,
     prune_model_usage_config,
@@ -108,6 +112,317 @@ def get_system_config():
 
 _runtime_config: dict = {}
 
+_STORAGE_CONFIG_PATH = project_root() / "data" / "storage_config.json"
+_CACHE_DIRECTORY_CHILDREN = {
+    "downloads": "downloads",
+    "transcripts": "transcripts",
+    "covers": "covers",
+    "temp": "temp",
+}
+_DOWNLOAD_TEMP_SUFFIXES = {".part", ".ytdl", ".tmp", ".temp", ".download"}
+_TRANSCRIPT_CACHE_NAMES = {"transcription.json", "transcription.srt"}
+_TRANSCRIPT_CACHE_SUFFIXES = {".vtt", ".ass"}
+
+
+def _resolve_storage_path(value: str | Path) -> Path:
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = project_root() / path
+    return path
+
+
+def _display_storage_path(path: str | Path) -> str:
+    return str(_resolve_storage_path(path))
+
+
+def _join_storage_path(root_path: str, child_dir: str) -> str:
+    return str(_resolve_storage_path(root_path) / child_dir)
+
+
+def _default_storage_config() -> dict:
+    data_root = _display_storage_path(settings.data_dir)
+    cache_root = _join_storage_path(data_root, "cache")
+    return {
+        "dataRootPath": data_root,
+        "cacheRootPath": cache_root,
+        "cacheDirectories": {
+            key: _join_storage_path(cache_root, child)
+            for key, child in _CACHE_DIRECTORY_CHILDREN.items()
+        },
+        "lastCacheClearedAt": None,
+    }
+
+
+def _normalize_storage_config(config: dict | None) -> dict:
+    fallback = _default_storage_config()
+    config = config or {}
+    cache_dirs = config.get("cacheDirectories") or {}
+    data_root = str(config.get("dataRootPath") or fallback["dataRootPath"]).strip()
+    cache_root = str(config.get("cacheRootPath") or fallback["cacheRootPath"]).strip()
+    normalized = {
+        "dataRootPath": _display_storage_path(data_root),
+        "cacheRootPath": _display_storage_path(cache_root),
+        "cacheDirectories": {},
+        "lastCacheClearedAt": config.get("lastCacheClearedAt") or fallback["lastCacheClearedAt"],
+    }
+    for key, child in _CACHE_DIRECTORY_CHILDREN.items():
+        value = str(cache_dirs.get(key) or "").strip()
+        normalized["cacheDirectories"][key] = (
+            _display_storage_path(value)
+            if value
+            else _join_storage_path(normalized["cacheRootPath"], child)
+        )
+    return normalized
+
+
+def _load_storage_config() -> dict:
+    if _STORAGE_CONFIG_PATH.exists():
+        try:
+            return _normalize_storage_config(json.loads(_STORAGE_CONFIG_PATH.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return _default_storage_config()
+
+
+def _save_storage_config(config: dict) -> dict:
+    normalized = _normalize_storage_config(config)
+    _STORAGE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _STORAGE_CONFIG_PATH.write_text(
+        json.dumps(normalized, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    settings.data_dir = normalized["dataRootPath"]
+    return normalized
+
+
+def _is_root_path(path: Path) -> bool:
+    resolved = path.resolve()
+    return resolved == resolved.parent
+
+
+def _validate_storage_config(config: dict) -> dict:
+    normalized = _normalize_storage_config(config)
+    paths = [
+        _resolve_storage_path(normalized["dataRootPath"]),
+        _resolve_storage_path(normalized["cacheRootPath"]),
+        *[
+            _resolve_storage_path(path)
+            for path in normalized["cacheDirectories"].values()
+        ],
+    ]
+    for path in paths:
+        if _is_root_path(path):
+            raise HTTPException(status_code=400, detail=f"不能使用磁盘根目录作为存储目录: {path}")
+    try:
+        for path in paths:
+            path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"创建存储目录失败: {exc}") from exc
+    return normalized
+
+
+def _iter_files(path: Path):
+    if not path.exists():
+        return
+    if path.is_file():
+        yield path
+        return
+    if not path.is_dir():
+        return
+    try:
+        for item in path.rglob("*"):
+            if item.is_file():
+                yield item
+    except OSError:
+        return
+
+
+def _path_size(path: Path) -> int:
+    total = 0
+    for item in _iter_files(path) or []:
+        try:
+            total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _storage_disk_free(path: Path) -> int:
+    probe = path if path.exists() else path.parent
+    try:
+        probe.mkdir(parents=True, exist_ok=True)
+        return shutil.disk_usage(probe).free
+    except Exception:
+        return 0
+
+
+def _video_dirs(data_root: Path) -> list[Path]:
+    videos_root = data_root / "videos"
+    if not videos_root.is_dir():
+        return []
+    try:
+        return [item for item in videos_root.iterdir() if item.is_dir()]
+    except OSError:
+        return []
+
+
+def _cache_paths_for_key(key: str, config: dict) -> list[Path]:
+    data_root = _resolve_storage_path(config["dataRootPath"])
+    paths: list[Path] = []
+    configured = config.get("cacheDirectories", {}).get(key)
+    if configured:
+        paths.append(_resolve_storage_path(configured))
+
+    if key == "downloads":
+        for video_dir in _video_dirs(data_root):
+            try:
+                paths.extend(
+                    item for item in video_dir.iterdir()
+                    if item.is_file() and item.suffix.lower() in _DOWNLOAD_TEMP_SUFFIXES
+                )
+            except OSError:
+                continue
+    elif key == "transcripts":
+        for video_dir in _video_dirs(data_root):
+            try:
+                paths.extend(
+                    item for item in video_dir.iterdir()
+                    if item.is_file()
+                    and (
+                        item.name in _TRANSCRIPT_CACHE_NAMES
+                        or item.suffix.lower() in _TRANSCRIPT_CACHE_SUFFIXES
+                    )
+                )
+            except OSError:
+                continue
+    elif key == "covers":
+        for video_dir in _video_dirs(data_root):
+            snapshot_dir = video_dir / "snapshots"
+            if snapshot_dir.exists():
+                paths.append(snapshot_dir)
+    elif key == "temp":
+        for name in ("temp", "tmp"):
+            temp_dir = data_root / name
+            if temp_dir.exists():
+                paths.append(temp_dir)
+
+    return _dedupe_paths(paths)
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path.absolute())
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def _cache_key_stats(key: str, config: dict) -> dict:
+    paths = _cache_paths_for_key(key, config)
+    bytes_used = sum(_path_size(path) for path in paths)
+    configured_path = config.get("cacheDirectories", {}).get(key, "")
+    return {
+        "key": key,
+        "path": configured_path,
+        "bytes": bytes_used,
+        "exists": any(path.exists() for path in paths),
+        "paths": [str(path) for path in paths if path.exists()],
+    }
+
+
+def _storage_stats(config: dict | None = None) -> dict:
+    normalized = _normalize_storage_config(config or _load_storage_config())
+    data_root = _resolve_storage_path(normalized["dataRootPath"])
+    cache_stats = [
+        _cache_key_stats(key, normalized)
+        for key in _CACHE_DIRECTORY_CHILDREN
+    ]
+    cache_bytes = sum(item["bytes"] for item in cache_stats)
+    return {
+        "config": normalized,
+        "data_root_path": normalized["dataRootPath"],
+        "data_root_bytes": _path_size(data_root),
+        "cache_bytes": cache_bytes,
+        "disk_free_bytes": _storage_disk_free(data_root),
+        "cache": cache_stats,
+    }
+
+
+def _is_forbidden_clear_root(path: Path, config: dict) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path.absolute()
+    forbidden = {
+        project_root().resolve(),
+        _resolve_storage_path(config["dataRootPath"]).resolve(),
+        _resolve_storage_path(config["cacheRootPath"]).resolve().parent,
+    }
+    return _is_root_path(resolved) or resolved in forbidden
+
+
+def _delete_cache_path(path: Path, config: dict) -> int:
+    if not path.exists():
+        return 0
+    if _is_forbidden_clear_root(path, config):
+        return 0
+    if path.is_symlink():
+        return 0
+    if path.is_file():
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            return size
+        except OSError:
+            return 0
+    if not path.is_dir():
+        return 0
+
+    freed = 0
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return 0
+
+    for child in children:
+        if child.is_symlink():
+            continue
+        if child.is_file():
+            try:
+                size = child.stat().st_size
+                child.unlink()
+                freed += size
+            except OSError:
+                continue
+        elif child.is_dir():
+            size = _path_size(child)
+            try:
+                shutil.rmtree(child)
+                freed += size
+            except OSError:
+                continue
+    return freed
+
+
+def _clear_cache_keys(keys: list[str], config: dict) -> tuple[int, list[str]]:
+    valid_keys = [key for key in keys if key in _CACHE_DIRECTORY_CHILDREN]
+    freed = 0
+    cleared: list[str] = []
+    for key in valid_keys:
+        before = freed
+        for path in _cache_paths_for_key(key, config):
+            freed += _delete_cache_path(path, config)
+        if freed > before:
+            cleared.append(key)
+    return freed, cleared
+
 
 class ConfigUpdate(BaseModel):
     llm_provider: str | None = None
@@ -123,6 +438,17 @@ class ModelUsageUpdate(BaseModel):
     embedding_provider_id: str | None = None
     embedding_model_name: str | None = None
     embedding_model: str | None = None
+
+
+class StorageConfigUpdate(BaseModel):
+    dataRootPath: str | None = None
+    cacheRootPath: str | None = None
+    cacheDirectories: dict[str, str] | None = None
+    lastCacheClearedAt: str | None = None
+
+
+class StorageClearRequest(BaseModel):
+    keys: list[str]
 
 
 @router.put("/config")
@@ -172,6 +498,57 @@ def save_system_config():
     return {"message": "配置已保存到 config.yaml", "saved_fields": list(_runtime_config.keys())}
 
 
+@router.get("/storage/config")
+def get_storage_config():
+    """获取后端存储路径配置。"""
+    return _load_storage_config()
+
+
+@router.put("/storage/config")
+def update_storage_config(body: StorageConfigUpdate):
+    """保存存储路径配置，并让当前后端进程立即使用新的 data_dir。"""
+    current = _load_storage_config()
+    incoming = body.model_dump(exclude_none=True)
+    merged = {
+        **current,
+        **incoming,
+        "cacheDirectories": {
+            **current.get("cacheDirectories", {}),
+            **(incoming.get("cacheDirectories") or {}),
+        },
+    }
+    normalized = _validate_storage_config(merged)
+    saved = _save_storage_config(normalized)
+    return saved
+
+
+@router.get("/storage/stats")
+def get_storage_stats():
+    """获取真实后端数据目录与缓存分类占用。"""
+    return _storage_stats()
+
+
+@router.post("/storage/clear")
+def clear_storage_cache(body: StorageClearRequest):
+    """按分类清理缓存文件，不删除数据库、笔记、向量库或视频记录。"""
+    if not body.keys:
+        raise HTTPException(status_code=400, detail="请选择要清理的缓存类型")
+    invalid = [key for key in body.keys if key not in _CACHE_DIRECTORY_CHILDREN]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"未知缓存类型: {', '.join(invalid)}")
+
+    config = _load_storage_config()
+    freed, cleared = _clear_cache_keys(body.keys, config)
+    config["lastCacheClearedAt"] = datetime.now(timezone.utc).isoformat()
+    saved = _save_storage_config(config)
+    return {
+        "freed_bytes": freed,
+        "cleared_keys": cleared,
+        "config": saved,
+        "stats": _storage_stats(saved),
+    }
+
+
 @router.get("/stats")
 def get_system_stats(db: Session = Depends(get_db)):
     """获取系统统计信息。"""
@@ -184,9 +561,11 @@ def get_system_stats(db: Session = Depends(get_db)):
     total_chunk_count = sum((c[0] or 0) for c in chunks)
     durations = db.query(Video).with_entities(Video.duration_seconds).all()
     total_hours = sum((d[0] or 0) for d in durations) / 3600
+    data_root = _resolve_storage_path(settings.data_dir)
     try:
-        disk = shutil.disk_usage(settings.data_dir)
-        storage_usage = disk.total - disk.free
+        data_root.mkdir(parents=True, exist_ok=True)
+        storage_usage = _path_size(data_root)
+        disk = shutil.disk_usage(data_root)
         disk_free = disk.free
     except Exception:
         storage_usage = 0
@@ -580,18 +959,84 @@ def _detect_installed_cublas_package() -> str | None:
     return None
 
 
+def _cublas_dll_version_from_path(path: Path) -> str | None:
+    """Return the nvidia-cublas package matching DLLs found in a directory."""
+    dll_sets = (
+        ("nvidia-cublas-cu12", ("cublas64_12.dll", "cublasLt64_12.dll")),
+        ("nvidia-cublas-cu11", ("cublas64_11.dll", "cublasLt64_11.dll")),
+    )
+    for package, dlls in dll_sets:
+        if all((path / dll).exists() for dll in dlls):
+            return package
+    return None
+
+
+def _detect_cublas_dll_package() -> str | None:
+    """Detect usable cuBLAS DLLs without relying on pip metadata.
+
+    PyInstaller desktop sidecars often do not preserve importlib.metadata for
+    nvidia-cublas-cuXX, while the actual DLLs may be bundled or already copied
+    next to ctranslate2. Treat those DLLs as installed to avoid repeated installs.
+    """
+    candidate_dirs: list[Path] = []
+
+    try:
+        import ctranslate2 as _ct2
+        candidate_dirs.append(Path(_ct2.__file__).parent)
+    except Exception:
+        pass
+
+    try:
+        import nvidia.cublas as _cublas
+        candidate_dirs.append(Path(_cublas.__path__[0]) / "bin")
+    except Exception:
+        pass
+
+    for base in sys.path:
+        base_path = Path(base)
+        candidate_dirs.append(base_path / "nvidia" / "cublas" / "bin")
+
+    if sys.platform == "win32":
+        for base in os.environ.get("PATH", "").split(os.pathsep):
+            if base:
+                candidate_dirs.append(Path(base))
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            root = Path(meipass)
+            candidate_dirs.extend([
+                root,
+                root / "nvidia" / "cublas" / "bin",
+                root / "_internal" / "nvidia" / "cublas" / "bin",
+                root / "ctranslate2",
+            ])
+
+    seen: set[str] = set()
+    for path in candidate_dirs:
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            resolved = str(path)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        package = _cublas_dll_version_from_path(path)
+        if package:
+            return package
+    return None
+
+
 def _detect_cublas_installed() -> bool:
-    """检测 nvidia-cublas-cuXX 是否已安装且版本与 CUDA 驱动匹配。"""
-    installed_pkg = _detect_installed_cublas_package()
-    if not installed_pkg:
-        return False
+    """检测当前运行环境中的 cuBLAS 是否可用且版本与 CUDA 驱动匹配。"""
+    installed_pkg = _detect_installed_cublas_package() or _detect_cublas_dll_package()
 
     # 获取 CUDA 驱动版本，检查与已安装包的匹配
     cuda_version, _ = _detect_cuda_version()
     recommended = _get_recommended_package(cuda_version)
 
     # 版本不匹配：驱动是 11.x 但装的是 cu12（或反过来）
-    if recommended and recommended != installed_pkg:
+    if installed_pkg and recommended and recommended != installed_pkg:
         return False
 
     # 检查 DLL 是否可被 ctranslate2 加载
@@ -601,17 +1046,7 @@ def _detect_cublas_installed() -> bool:
     except Exception:
         pass
 
-    # 回退：直接检查 DLL 文件
-    try:
-        import ctranslate2 as _ct2
-        _ct2_dir = Path(_ct2.__file__).parent
-        for dll in ("cublas64_12.dll", "cublas64_11.dll"):
-            if (_ct2_dir / dll).exists():
-                return True
-        import nvidia.cublas
-        return True
-    except (ImportError, Exception):
-        return False
+    return installed_pkg is not None
 
 
 def _get_recommended_package(cuda_version: str | None) -> str:
@@ -671,7 +1106,7 @@ def get_gpu_info():
 
     recommended_package = _get_recommended_package(cuda_version) if cuda_available else None
     gpu_deps_installed = _detect_cublas_installed()
-    installed_package = _detect_installed_cublas_package()
+    installed_package = _detect_installed_cublas_package() or _detect_cublas_dll_package()
     package_mismatch = (
         cuda_available
         and installed_package is not None

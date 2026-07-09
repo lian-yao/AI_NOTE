@@ -20,12 +20,12 @@ def _save(d):
 
 
 # ---- Transcribers ----
-_WS=["tiny","base","small","medium","large-v3"]
+_WS=["tiny","base","small","medium","large-v3","turbo"]
 
 @router.get("/transcribers/config")
 def get_tc():
     return {"transcriber_type":"fast-whisper","whisper_model_size":settings.whisper_model_size or "tiny",
-        "available_types":[{"value":"fast-whisper","label":"fast-whisper"},{"value":"bcut","label":"??"}],
+        "available_types":[{"value":"fast-whisper","label":"fast-whisper"}],
         "whisper_model_sizes":_WS,"mlx_whisper_available":False}
 
 @router.put("/transcribers/config")

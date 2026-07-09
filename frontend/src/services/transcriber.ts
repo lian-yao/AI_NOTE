@@ -30,10 +30,19 @@ export interface TranscriberConfig {
 
 export interface ModelStatus {
   model_size: string
+  repo_id?: string | null
+  estimated_size_mb?: number | null
+  estimated_size_label?: string | null
+  downloaded_size_bytes?: number | null
+  cache_size_bytes?: number | null
+  partial_size_bytes?: number | null
+  cache_path?: string | null
+  partial?: boolean
   downloaded: boolean
   downloading: boolean
   failed?: boolean
   error?: string | null
+  progress?: number
 }
 
 export interface ModelsStatusResponse {
@@ -48,11 +57,8 @@ const defaultTranscriberConfig: TranscriberConfig = {
   whisper_device: 'auto',
   available_types: [
     { value: 'fast-whisper', label: 'fast-whisper' },
-    { value: 'mlx-whisper', label: 'mlx-whisper' },
-    { value: 'groq', label: 'Groq' },
-    { value: 'bcut', label: '必剪' },
   ],
-  whisper_model_sizes: ['tiny', 'base', 'small', 'medium', 'large-v3'],
+  whisper_model_sizes: ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
   mlx_whisper_available: false,
 }
 
@@ -63,8 +69,42 @@ const defaultWhisperModels: WhisperModelsResponse = {
     small: 'small',
     medium: 'medium',
     'large-v3': 'large-v3',
+    turbo: 'turbo',
   },
   custom: {},
+}
+
+const whisperModelMetadata: Record<string, { repo_id: string; estimated_size_mb: number; estimated_size_label: string }> = {
+  tiny: {
+    repo_id: 'Systran/faster-whisper-tiny',
+    estimated_size_mb: 75,
+    estimated_size_label: '约 75 MB',
+  },
+  base: {
+    repo_id: 'Systran/faster-whisper-base',
+    estimated_size_mb: 145,
+    estimated_size_label: '约 145 MB',
+  },
+  small: {
+    repo_id: 'Systran/faster-whisper-small',
+    estimated_size_mb: 466,
+    estimated_size_label: '约 466 MB',
+  },
+  medium: {
+    repo_id: 'Systran/faster-whisper-medium',
+    estimated_size_mb: 1500,
+    estimated_size_label: '约 1.5 GB',
+  },
+  'large-v3': {
+    repo_id: 'Systran/faster-whisper-large-v3',
+    estimated_size_mb: 3100,
+    estimated_size_label: '约 3.0 GB',
+  },
+  turbo: {
+    repo_id: 'mobiuslabsgmbh/faster-whisper-large-v3-turbo',
+    estimated_size_mb: 1600,
+    estimated_size_label: '约 1.6 GB',
+  },
 }
 
 function readLocalTranscriberConfig(): TranscriberConfig {
@@ -95,8 +135,16 @@ function localModelsStatus(): ModelsStatusResponse {
   return {
     whisper: config.whisper_model_sizes.map(model_size => ({
       model_size,
+      ...whisperModelMetadata[model_size],
+      downloaded_size_bytes: null,
+      cache_size_bytes: null,
+      partial_size_bytes: null,
+      cache_path: null,
+      partial: false,
       downloaded: model_size === config.whisper_model_size,
       downloading: false,
+      failed: false,
+      error: null,
     })),
     mlx_whisper: [],
     mlx_available: Boolean(config.mlx_whisper_available),
@@ -195,6 +243,18 @@ export const resetDownload = async (modelSize: string) => {
     return await request.post(
       `/transcribers/models/download/${encodeURIComponent(modelSize)}/reset`,
       undefined,
+      cfg(),
+    )
+  } catch (error) {
+    if (isNotFoundError(error)) return skippedApiResult()
+    throw error
+  }
+}
+
+export const deleteModelCache = async (modelSize: string) => {
+  try {
+    return await request.delete(
+      `/transcribers/models/${encodeURIComponent(modelSize)}/cache`,
       cfg(),
     )
   } catch (error) {

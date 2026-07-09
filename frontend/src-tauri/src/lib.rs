@@ -287,6 +287,9 @@ fn spawn_backend_sidecar(app_handle: &tauri::AppHandle) -> Result<CommandChild, 
     let additional_paths = get_additional_binary_paths();
     let enhanced_path = enhance_path_variable(&current_path, &additional_paths);
     all_env_vars.insert("PATH".to_string(), enhanced_path);
+    all_env_vars
+        .entry("BACKEND_PORT".to_string())
+        .or_insert_with(|| BACKEND_DEFAULT_PORT.to_string());
 
     let mut sidecar_command = app_handle
         .shell()

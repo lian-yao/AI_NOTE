@@ -212,6 +212,23 @@ class MockBackendStore:
             "data_dir": "./mock_backend/.data",
             "video_retention": "processed",
         }
+        self.storage_config: dict[str, Any] = {
+            "dataRootPath": "./mock_backend/.data",
+            "cacheRootPath": "./mock_backend/.data/cache",
+            "cacheDirectories": {
+                "downloads": "./mock_backend/.data/cache/downloads",
+                "transcripts": "./mock_backend/.data/cache/transcripts",
+                "covers": "./mock_backend/.data/cache/covers",
+                "temp": "./mock_backend/.data/cache/temp",
+            },
+            "lastCacheClearedAt": None,
+        }
+        self.storage_cache_usage: dict[str, int] = {
+            "downloads": 12 * 1024 * 1024,
+            "transcripts": 3 * 1024 * 1024,
+            "covers": 2 * 1024 * 1024,
+            "temp": 512 * 1024,
+        }
         self.proxy_config: dict[str, Any] = {
             "enabled": False,
             "url": "",
@@ -223,23 +240,23 @@ class MockBackendStore:
         self.transcriber_config: dict[str, Any] = {
             "transcriber_type": "fast-whisper",
             "whisper_model_size": "base",
+            "whisper_device": "auto",
             "available_types": [
                 {"value": "fast-whisper", "label": "Fast Whisper"},
-                {"value": "mlx-whisper", "label": "MLX Whisper"},
-                {"value": "groq", "label": "Groq"},
-                {"value": "bcut", "label": "BCut"},
             ],
-            "whisper_model_sizes": ["tiny", "base", "small", "medium", "large-v3"],
+            "whisper_model_sizes": ["tiny", "base", "small", "medium", "large-v3", "turbo"],
             "whisper_builtin_models": {
                 "tiny": "Systran/faster-whisper-tiny",
                 "base": "Systran/faster-whisper-base",
                 "small": "Systran/faster-whisper-small",
                 "medium": "Systran/faster-whisper-medium",
                 "large-v3": "Systran/faster-whisper-large-v3",
+                "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
             },
             "whisper_custom_models": {},
             "mlx_whisper_available": False,
         }
+        self.downloaded_whisper_models: set[str] = {"base"}
         self.providers: list[dict[str, Any]] = [
             {
                 "id": "mock-provider",

@@ -216,6 +216,77 @@ async def system_stats() -> dict[str, Any]:
     )
 
 
+def mock_storage_stats() -> dict[str, Any]:
+    videos = list(store.videos.values())
+    data_bytes = sum(int(item.get("file_size") or 0) for item in videos)
+    cache_rows = [
+        {
+            "key": key,
+            "path": store.storage_config["cacheDirectories"][key],
+            "bytes": int(store.storage_cache_usage.get(key, 0)),
+            "exists": True,
+            "paths": [store.storage_config["cacheDirectories"][key]],
+        }
+        for key in ("downloads", "transcripts", "covers", "temp")
+    ]
+    return {
+        "config": store.clone(store.storage_config),
+        "data_root_path": store.storage_config["dataRootPath"],
+        "data_root_bytes": data_bytes,
+        "cache_bytes": sum(item["bytes"] for item in cache_rows),
+        "disk_free_bytes": 64 * 1024 * 1024 * 1024,
+        "cache": cache_rows,
+    }
+
+
+@router.get("/system/storage/config")
+async def get_storage_config() -> dict[str, Any]:
+    return ok(store.clone(store.storage_config))
+
+
+@router.put("/system/storage/config")
+async def update_storage_config(body: dict[str, Any]) -> dict[str, Any]:
+    cache_dirs = {
+        **store.storage_config.get("cacheDirectories", {}),
+        **(body.get("cacheDirectories") or {}),
+    }
+    store.storage_config.update(
+        {
+            key: body[key]
+            for key in ("dataRootPath", "cacheRootPath", "lastCacheClearedAt")
+            if key in body
+        }
+    )
+    store.storage_config["cacheDirectories"] = cache_dirs
+    store.system_config["data_dir"] = store.storage_config["dataRootPath"]
+    return ok(store.clone(store.storage_config))
+
+
+@router.get("/system/storage/stats")
+async def storage_stats() -> dict[str, Any]:
+    return ok(mock_storage_stats())
+
+
+@router.post("/system/storage/clear")
+async def clear_storage_cache(body: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        key for key in body.get("keys", [])
+        if key in store.storage_cache_usage
+    ]
+    freed = sum(store.storage_cache_usage[key] for key in keys)
+    for key in keys:
+        store.storage_cache_usage[key] = 0
+    store.storage_config["lastCacheClearedAt"] = utc_now()
+    return ok(
+        {
+            "freed_bytes": freed,
+            "cleared_keys": keys,
+            "config": store.clone(store.storage_config),
+            "stats": mock_storage_stats(),
+        }
+    )
+
+
 @router.get("/system/deploy-status")
 async def deploy_status() -> dict[str, Any]:
     return ok(
@@ -607,7 +678,7 @@ async def get_transcriber_config() -> dict[str, Any]:
 @router.put("/transcribers/config")
 async def update_transcriber_config(body: dict[str, Any]) -> dict[str, Any]:
     updated: list[str] = []
-    for key in ["transcriber_type", "whisper_model_size"]:
+    for key in ["transcriber_type", "whisper_model_size", "whisper_device"]:
         if key in body and body[key]:
             store.transcriber_config[key] = body[key]
             updated.append(key)
@@ -618,30 +689,41 @@ async def update_transcriber_config(body: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/transcribers/models/status")
 async def transcriber_models_status() -> dict[str, Any]:
-    selected = store.transcriber_config["whisper_model_size"]
     sizes = store.transcriber_config["whisper_model_sizes"]
+    model_meta = {
+        "tiny": ("Systran/faster-whisper-tiny", 75, "约 75 MB"),
+        "base": ("Systran/faster-whisper-base", 145, "约 145 MB"),
+        "small": ("Systran/faster-whisper-small", 466, "约 466 MB"),
+        "medium": ("Systran/faster-whisper-medium", 1500, "约 1.5 GB"),
+        "large-v3": ("Systran/faster-whisper-large-v3", 3100, "约 3.0 GB"),
+        "turbo": ("mobiuslabsgmbh/faster-whisper-large-v3-turbo", 1600, "约 1.6 GB"),
+    }
     return ok(
         {
             "whisper": [
                 {
                     "model_size": size,
-                    "downloaded": size == selected,
+                    "repo_id": model_meta.get(size, ("", None, None))[0],
+                    "estimated_size_mb": model_meta.get(size, ("", None, None))[1],
+                    "estimated_size_label": model_meta.get(size, ("", None, None))[2],
+                    "downloaded_size_bytes": (
+                        (model_meta.get(size, ("", 0, ""))[1] or 0) * 1024 * 1024
+                        if size in store.downloaded_whisper_models
+                        else None
+                    ),
+                    "cache_path": (
+                        f"C:/Users/mock/.cache/huggingface/hub/models--{model_meta.get(size, ('', None, None))[0].replace('/', '--')}"
+                        if size in store.downloaded_whisper_models
+                        else None
+                    ),
+                    "downloaded": size in store.downloaded_whisper_models,
                     "downloading": False,
                     "failed": False,
                     "error": None,
                 }
                 for size in sizes
             ],
-            "mlx_whisper": [
-                {
-                    "model_size": size,
-                    "downloaded": False,
-                    "downloading": False,
-                    "failed": False,
-                    "error": None,
-                }
-                for size in sizes
-            ],
+            "mlx_whisper": [],
             "mlx_available": False,
         }
     )
@@ -652,12 +734,28 @@ async def download_transcriber_model(body: dict[str, Any]) -> dict[str, Any]:
     model_size = body.get("model_size") or store.transcriber_config["whisper_model_size"]
     transcriber_type = body.get("transcriber_type") or store.transcriber_config["transcriber_type"]
     store.transcriber_config["whisper_model_size"] = model_size
+    store.downloaded_whisper_models.add(model_size)
     return ok(
         {
             "model_size": model_size,
             "transcriber_type": transcriber_type,
             "downloading": False,
             "downloaded": True,
+        }
+    )
+
+
+@router.delete("/transcribers/models/{model_size}/cache")
+async def delete_transcriber_model_cache(model_size: str) -> dict[str, Any]:
+    deleted = model_size in store.downloaded_whisper_models
+    store.downloaded_whisper_models.discard(model_size)
+    return ok(
+        {
+            "status": "deleted" if deleted else "not_found",
+            "model_size": model_size,
+            "deleted": deleted,
+            "freed_bytes": 145 * 1024 * 1024 if deleted else 0,
+            "message": "mock 模型缓存已删除" if deleted else "mock 模型缓存不存在",
         }
     )
 

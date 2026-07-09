@@ -2,12 +2,34 @@
 系统配置管理
 优先级：环境变量 > .env > config.yaml > 默认值
 """
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.paths import project_root
 
-_default_data_dir = str(project_root() / "data")
+_storage_config_file = project_root() / "data" / "storage_config.json"
+
+
+def _configured_data_dir() -> str | None:
+    if not _storage_config_file.exists():
+        return None
+    try:
+        data = json.loads(_storage_config_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    raw = str(data.get("dataRootPath") or "").strip()
+    if not raw:
+        return None
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = project_root() / path
+    return str(path)
+
+
+_default_data_dir = _configured_data_dir() or str(project_root() / "data")
 
 # 加载 .env 所有变量到系统环境（包括非 VN_ 前缀的，如 HF_ENDPOINT）
 load_dotenv(project_root() / ".env")

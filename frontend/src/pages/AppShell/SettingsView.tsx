@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react'
 import {
   Activity,
   ChevronDown,
@@ -28,7 +28,12 @@ import {
 import { QRCode as AntQRCode } from 'antd'
 import toast from 'react-hot-toast'
 import type { IProvider } from '@/types'
-import { useSystemStore, type CacheDirectoryKey, type StoragePathConfig } from '@/store/configStore'
+import {
+  createDefaultStoragePathConfig,
+  useSystemStore,
+  type CacheDirectoryKey,
+  type StoragePathConfig,
+} from '@/store/configStore'
 import { useProviderStore } from '@/store/providerStore'
 import {
   addModel,
@@ -53,6 +58,7 @@ import {
 import { getProxyConfig, updateProxyConfig, type ProxyConfig } from '@/services/proxy'
 import {
   downloadModel,
+  deleteModelCache,
   getModelsStatus,
   getTranscriberConfig,
   updateTranscriberConfig,
@@ -69,10 +75,15 @@ import {
 import {
   getDeployStatus,
   getModelUsageConfig,
+  getStorageConfig,
+  getStorageStats,
   getSystemStats,
+  clearStorageCache,
+  updateStorageConfig,
   updateModelUsageConfig,
   type DeployStatus,
   type ModelUsageConfig,
+  type StorageStats,
   type SystemStats,
 } from '@/services/system'
 import { isSkippedApiResult } from '@/services/fallback'
@@ -303,9 +314,16 @@ function getLocalStorageBytes(keys: string[]) {
 }
 
 function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1
+  return `${value.toFixed(precision)} ${units[unitIndex]}`
 }
 
 function formatCacheClearedAt(value: string | null) {
@@ -1870,7 +1888,6 @@ function StorageSection() {
   const storagePathConfig = useSystemStore(state => state.storagePathConfig)
   const setStoragePathConfig = useSystemStore(state => state.setStoragePathConfig)
   const resetStoragePathConfig = useSystemStore(state => state.resetStoragePathConfig)
-  const markCacheClearedAt = useSystemStore(state => state.markCacheClearedAt)
   const [draft, setDraft] = useState<StoragePathConfig>(() =>
     normalizeStoragePathConfig(storagePathConfig),
   )
@@ -1883,17 +1900,60 @@ function StorageSection() {
       {} as Record<CacheDirectoryKey, boolean>,
     ),
   )
-  const [, setUsageRevision] = useState(0)
+  const [usageRevision, setUsageRevision] = useState(0)
+  const [storageStats, setStorageStats] = useState<StorageStats | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+  const [savingStorage, setSavingStorage] = useState(false)
+  const [clearingStorage, setClearingStorage] = useState(false)
+
+  const refreshStorageState = useCallback(
+    async (showFeedback = false) => {
+      setStatsLoading(true)
+      try {
+        const [backendConfig, stats] = await Promise.all([
+          getStorageConfig({ silent: true }),
+          getStorageStats({ silent: true }),
+        ])
+        const normalized = normalizeStoragePathConfig(backendConfig)
+        setStoragePathConfig(normalized)
+        setDraft(normalized)
+        setStorageStats(stats)
+        if (showFeedback) toast.success('存储统计已更新')
+      } catch (error) {
+        console.error('加载存储配置失败:', error)
+        if (showFeedback) toast.error('存储统计失败')
+      } finally {
+        setStatsLoading(false)
+      }
+    },
+    [setStoragePathConfig],
+  )
 
   useEffect(() => {
     setDraft(normalizeStoragePathConfig(storagePathConfig))
   }, [storagePathConfig])
 
-  const cacheStats = CACHE_DIRECTORY_META.map(item => ({
-    ...item,
-    path: draft.cacheDirectories[item.key] || '',
-    bytes: getLocalStorageBytes(item.storageKeys),
-  }))
+  useEffect(() => {
+    void refreshStorageState()
+  }, [refreshStorageState])
+
+  const cacheStats = useMemo(() => {
+    const backendStats = new Map(storageStats?.cache.map(item => [item.key, item]) ?? [])
+    return CACHE_DIRECTORY_META.map(item => {
+      const backend = backendStats.get(item.key)
+      const browserBytes = getLocalStorageBytes(item.storageKeys)
+      const backendBytes = backend?.bytes ?? 0
+      return {
+        ...item,
+        path: draft.cacheDirectories[item.key] || backend?.path || '',
+        bytes: backendBytes + browserBytes,
+        backendBytes,
+        browserBytes,
+        exists: backend?.exists ?? false,
+        paths: backend?.paths ?? [],
+      }
+    })
+  }, [draft.cacheDirectories, storageStats, usageRevision])
   const selectedStats = cacheStats.filter(item => cacheSelection[item.key])
   const selectedBytes = selectedStats.reduce((total, item) => total + item.bytes, 0)
   const normalizedDraft = normalizeStoragePathConfig(draft)
@@ -1942,30 +2002,56 @@ function StorageSection() {
     }))
   }
 
-  const saveStorageConfig = () => {
+  const saveStorageConfig = async () => {
     const requiredPaths = [
       normalizedDraft.dataRootPath,
       normalizedDraft.cacheRootPath,
       ...Object.values(normalizedDraft.cacheDirectories),
     ]
     if (requiredPaths.some(path => !path)) {
-      toast.error('请补全知识库路径和缓存目录')
+      toast.error('请补全数据路径和缓存目录')
       return
     }
 
-    setStoragePathConfig(normalizedDraft)
-    toast.success('存储配置已保存')
+    setSavingStorage(true)
+    try {
+      const saved = normalizeStoragePathConfig(await updateStorageConfig(normalizedDraft))
+      setStoragePathConfig(saved)
+      setDraft(saved)
+      const stats = await getStorageStats({ silent: true })
+      setStorageStats(stats)
+      toast.success('存储配置已保存')
+    } catch (error) {
+      console.error('保存存储配置失败:', error)
+      toast.error('保存存储配置失败')
+    } finally {
+      setSavingStorage(false)
+    }
   }
 
-  const resetStorageConfig = () => {
+  const resetStorageConfig = async () => {
     const ok = window.confirm('恢复默认存储路径？当前填写的路径配置会被覆盖。')
     if (!ok) return
 
-    resetStoragePathConfig()
-    toast.success('已恢复默认存储路径')
+    const defaults = normalizeStoragePathConfig(createDefaultStoragePathConfig())
+    setSavingStorage(true)
+    try {
+      const saved = normalizeStoragePathConfig(await updateStorageConfig(defaults))
+      resetStoragePathConfig()
+      setStoragePathConfig(saved)
+      setDraft(saved)
+      const stats = await getStorageStats({ silent: true })
+      setStorageStats(stats)
+      toast.success('已恢复默认存储路径')
+    } catch (error) {
+      console.error('恢复默认存储路径失败:', error)
+      toast.error('恢复默认存储路径失败')
+    } finally {
+      setSavingStorage(false)
+    }
   }
 
-  const clearSelectedCache = () => {
+  const clearSelectedCache = async () => {
     if (selectedStats.length === 0) {
       toast.error('请选择要清理的缓存类型')
       return
@@ -1979,9 +2065,21 @@ function StorageSection() {
         item.storageKeys.forEach(key => localStorage.removeItem(key))
       })
     }
-    markCacheClearedAt(new Date().toISOString())
-    setUsageRevision(value => value + 1)
-    toast.success('已清理所选缓存')
+    setClearingStorage(true)
+    try {
+      const result = await clearStorageCache(selectedStats.map(item => item.key))
+      const saved = normalizeStoragePathConfig(result.config)
+      setStoragePathConfig(saved)
+      setDraft(saved)
+      setStorageStats(result.stats)
+      setUsageRevision(value => value + 1)
+      toast.success(`已清理所选缓存，释放 ${formatBytes(result.freed_bytes)}`)
+    } catch (error) {
+      console.error('清理缓存失败:', error)
+      toast.error('清理缓存失败')
+    } finally {
+      setClearingStorage(false)
+    }
   }
 
   return (
@@ -1991,13 +2089,14 @@ function StorageSection() {
           <div>
             <div className="font-medium text-neutral-200">数据与缓存路径</div>
             <div className="mt-1 text-xs text-neutral-500">
-              当前客户端的本地路径偏好。
+              当前后端使用的本地路径配置。
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               onClick={resetStorageConfig}
+              disabled={savingStorage}
               className="flex items-center gap-1.5 rounded-lg border border-neutral-800 px-3 py-2 text-xs text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-200"
             >
               <RefreshCcw size={14} />
@@ -2006,10 +2105,11 @@ function StorageSection() {
             <button
               type="button"
               onClick={saveStorageConfig}
+              disabled={savingStorage}
               className="flex items-center gap-1.5 rounded-lg bg-neutral-200 px-3 py-2 text-xs font-semibold text-neutral-950 transition-colors hover:bg-white"
             >
-              <Save size={14} />
-              保存路径
+              {savingStorage ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+              {savingStorage ? '保存中' : '保存路径'}
             </button>
           </div>
         </div>
@@ -2068,6 +2168,28 @@ function StorageSection() {
             </div>
           ))}
         </div>
+        {storageStats && (
+          <div className="mt-5 grid grid-cols-1 gap-3 border-t border-neutral-800 pt-4 text-xs md:grid-cols-3">
+            <div>
+              <span className="text-neutral-500">数据目录占用</span>
+              <span className="ml-2 font-medium text-neutral-200">
+                {formatBytes(storageStats.data_root_bytes)}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500">缓存占用</span>
+              <span className="ml-2 font-medium text-neutral-200">
+                {formatBytes(storageStats.cache_bytes)}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500">磁盘可用</span>
+              <span className="ml-2 font-medium text-neutral-200">
+                {formatBytes(storageStats.disk_free_bytes)}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="rounded-xl border border-neutral-800 bg-[#141414] p-6">
@@ -2081,19 +2203,21 @@ function StorageSection() {
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              onClick={() => setUsageRevision(value => value + 1)}
+              onClick={() => refreshStorageState(true)}
+              disabled={statsLoading}
               className="flex items-center gap-1.5 rounded-lg border border-neutral-800 px-3 py-2 text-xs text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-200"
             >
-              <RefreshCcw size={14} />
-              重新统计
+              {statsLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+              {statsLoading ? '统计中' : '重新统计'}
             </button>
             <button
               type="button"
               onClick={clearSelectedCache}
+              disabled={clearingStorage}
               className="flex items-center gap-1.5 rounded-lg bg-red-500/15 px-3 py-2 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/25"
             >
-              <Trash2 size={14} />
-              清理所选
+              {clearingStorage ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+              {clearingStorage ? '清理中' : '清理所选'}
             </button>
           </div>
         </div>
@@ -2174,7 +2298,7 @@ function PathPickerInput({
   )
 }
 
-const isWhisperType = (type: string) => type === 'fast-whisper' || type === 'mlx-whisper'
+const isWhisperType = (type: string) => type === 'fast-whisper'
 
 const fallbackTranscriberConfig: TranscriberConfig = {
   transcriber_type: 'fast-whisper',
@@ -2182,10 +2306,118 @@ const fallbackTranscriberConfig: TranscriberConfig = {
   whisper_device: 'auto',
   available_types: [
     { value: 'fast-whisper', label: 'fast-whisper' },
-    { value: 'mlx-whisper', label: 'mlx-whisper' },
   ],
-  whisper_model_sizes: ['tiny', 'base', 'small', 'medium', 'large-v3'],
+  whisper_model_sizes: ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
   mlx_whisper_available: false,
+}
+
+const TRANSCRIBER_TYPE_DETAILS: Record<string, { title: string; description: string; badges: string[] }> = {
+  'fast-whisper': {
+    title: 'Fast Whisper（本地离线）',
+    description: '在本机运行 Whisper 识别模型，首次需要模型缓存，后续会复用本地文件。',
+    badges: ['推荐', '离线', 'CPU/GPU'],
+  },
+}
+
+const WHISPER_MODEL_DETAILS: Record<string, { size: string; quality: string; speed: string; repoId: string }> = {
+  tiny: {
+    size: '约 75 MB',
+    quality: '基础准确率',
+    speed: '最快',
+    repoId: 'Systran/faster-whisper-tiny',
+  },
+  base: {
+    size: '约 145 MB',
+    quality: '轻量均衡',
+    speed: '很快',
+    repoId: 'Systran/faster-whisper-base',
+  },
+  small: {
+    size: '约 466 MB',
+    quality: '日常推荐',
+    speed: '较快',
+    repoId: 'Systran/faster-whisper-small',
+  },
+  medium: {
+    size: '约 1.5 GB',
+    quality: '更高准确率',
+    speed: '中等',
+    repoId: 'Systran/faster-whisper-medium',
+  },
+  'large-v3': {
+    size: '约 3.0 GB',
+    quality: '最高准确率',
+    speed: '较慢',
+    repoId: 'Systran/faster-whisper-large-v3',
+  },
+  turbo: {
+    size: '约 1.6 GB',
+    quality: '大模型加速版',
+    speed: '较快',
+    repoId: 'mobiuslabsgmbh/faster-whisper-large-v3-turbo',
+  },
+}
+
+const fallbackWhisperModelDetail = {
+  size: '未知大小',
+  quality: '自定义模型',
+  speed: '取决于模型',
+  repoId: '',
+}
+
+function formatClockTime(date: Date) {
+  return date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+function getWhisperModelDetail(status: ModelStatus | undefined, modelSize: string) {
+  const detail = WHISPER_MODEL_DETAILS[modelSize] ?? fallbackWhisperModelDetail
+  return {
+    ...detail,
+    size: status?.estimated_size_label || detail.size,
+    repoId: status?.repo_id || detail.repoId,
+  }
+}
+
+function getModelProgress(status: ModelStatus, downloadProgress: Record<string, number>) {
+  return downloadProgress[status.model_size] ?? status.progress ?? 0
+}
+
+function getModelStateLabel(status: ModelStatus, progress = 0) {
+  if (status.downloaded) {
+    const localSize = status.downloaded_size_bytes ? formatBytes(status.downloaded_size_bytes) : null
+    return localSize ? `已下载，本地占用 ${localSize}` : '已下载到本机缓存'
+  }
+  if (status.partial) {
+    const residueSize = status.partial_size_bytes || status.cache_size_bytes
+    return residueSize ? `未完整下载，本地残留 ${formatBytes(residueSize)}` : '未完整下载'
+  }
+  if (status.downloading) {
+    return `下载中${progress > 0 ? ` ${progress.toFixed(1)}%` : ''}`
+  }
+  if (status.failed) {
+    return status.error || '下载失败'
+  }
+  return '未下载'
+}
+
+function getModelStateBadge(status: ModelStatus) {
+  if (status.downloaded) return '已缓存'
+  if (status.partial) return '未完整'
+  if (status.downloading) return '下载中'
+  if (status.failed) return '失败'
+  return '未下载'
+}
+
+function getModelStateClass(status: ModelStatus) {
+  if (status.downloaded) return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+  if (status.partial) return 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+  if (status.downloading) return 'border-sky-500/30 bg-sky-500/10 text-sky-100'
+  if (status.failed) return 'border-red-500/30 bg-red-500/10 text-red-100'
+  return 'border-neutral-700 bg-neutral-900 text-neutral-400'
 }
 
 function TranscriberSection() {
@@ -2196,7 +2428,10 @@ function TranscriberSection() {
   const [selectedDevice, setSelectedDevice] = useState('auto')
   const [saving, setSaving] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
+  const [statusRefreshing, setStatusRefreshing] = useState(false)
+  const [lastScannedAt, setLastScannedAt] = useState('')
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
+  const [deletingModels, setDeletingModels] = useState<Record<string, boolean>>({})
 
   // GPU 相关状态
   const [gpuInfo, setGpuInfo] = useState<GPUInfo | null>(null)
@@ -2215,6 +2450,7 @@ function TranscriberSection() {
       setSelectedModel(cfg.whisper_model_size)
       setSelectedDevice(cfg.whisper_device || 'auto')
       setModelStatuses(statuses.whisper)
+      setLastScannedAt(formatClockTime(new Date()))
       setLoadFailed(false)
     } catch {
       setConfig(fallbackTranscriberConfig)
@@ -2237,12 +2473,17 @@ function TranscriberSection() {
   }
 
   // 只刷新模型状态，不重置用户选择
-  const refreshStatus = async () => {
+  const refreshStatus = async (showFeedback = false) => {
+    if (showFeedback) setStatusRefreshing(true)
     try {
       const statuses = await getModelsStatus({ silent: true })
       setModelStatuses(statuses.whisper)
+      setLastScannedAt(formatClockTime(new Date()))
+      if (showFeedback) toast.success('已重新扫描本地模型缓存')
     } catch {
-      // 静默失败
+      if (showFeedback) toast.error('模型缓存扫描失败')
+    } finally {
+      if (showFeedback) setStatusRefreshing(false)
     }
   }
 
@@ -2295,10 +2536,10 @@ function TranscriberSection() {
           setGpuInstalling(false)
           // 刷新 GPU 信息
           loadGPUInfo()
-          toast.success('GPU 驱动安装完成，可启用 GPU 加速')
+          toast.success('GPU 加速依赖安装完成，可启用 GPU 加速')
         } else if (progress.status === 'failed') {
           setGpuInstalling(false)
-          toast.error(progress.error || 'GPU 驱动安装失败')
+          toast.error(progress.error || 'GPU 加速依赖安装失败')
         }
       } catch {
         // 静默失败
@@ -2308,12 +2549,40 @@ function TranscriberSection() {
     return () => clearInterval(interval)
   }, [gpuInstallTaskId, gpuInstalling])
 
-  const currentStatus = useMemo(
-    () => modelStatuses.find(status => status.model_size === selectedModel),
-    [modelStatuses, selectedModel],
+  const statusByModel = useMemo(
+    () => new Map(modelStatuses.map(status => [status.model_size, status])),
+    [modelStatuses],
   )
 
-  const currentProgress = downloadProgress[selectedModel] ?? 0
+  const modelRows = useMemo<ModelStatus[]>(() => {
+    const sizes = config?.whisper_model_sizes ?? []
+    return sizes.map(size => (
+      statusByModel.get(size) ?? {
+        model_size: size,
+        downloaded: false,
+        downloading: false,
+        failed: false,
+        error: null,
+      }
+    ))
+  }, [config?.whisper_model_sizes, statusByModel])
+
+  const currentStatus = useMemo(
+    () => modelRows.find(status => status.model_size === selectedModel),
+    [modelRows, selectedModel],
+  )
+
+  const currentProgress = downloadProgress[selectedModel] ?? currentStatus?.progress ?? 0
+  const downloadedModels = useMemo(
+    () => modelRows.filter(status => status.downloaded),
+    [modelRows],
+  )
+  const selectedTypeDetail = TRANSCRIBER_TYPE_DETAILS[selectedType] ?? {
+    title: selectedType || '未知转写器',
+    description: '当前转写器由后端配置提供。',
+    badges: ['自定义'],
+  }
+  const selectedModelDetail = getWhisperModelDetail(currentStatus, selectedModel)
 
   const save = async () => {
     setSaving(true)
@@ -2329,6 +2598,68 @@ function TranscriberSection() {
     }
   }
 
+  const handleDownloadSelectedModel = async () => {
+    const result = await downloadModel({ model_size: selectedModel, transcriber_type: selectedType })
+    if (isSkippedApiResult(result)) {
+      toast.success('后端模型下载接口暂未实现，已跳过')
+    } else {
+      const payload = result as { status?: string; message?: string }
+      if (payload.status === 'already_downloaded') {
+        toast.success('本地缓存已存在，不会重复下载')
+      } else if (payload.status === 'already_downloading') {
+        toast.success(payload.message || '模型正在下载中')
+      } else if (payload.status === 'error') {
+        toast.error(payload.message || '模型下载启动失败')
+      } else {
+        toast.success('模型下载已开始')
+      }
+    }
+    setTimeout(() => refreshStatus(), 800)
+  }
+
+  const handleDeleteModelCache = async (model: ModelStatus) => {
+    const sizeBytes = model.downloaded_size_bytes || model.partial_size_bytes || model.cache_size_bytes
+    const localSize = sizeBytes ? `，本地占用 ${formatBytes(sizeBytes)}` : ''
+    const targetLabel = model.downloaded ? '本地模型缓存' : '未完整缓存残留'
+    const ok = window.confirm(
+      `删除 ${model.model_size} 的${targetLabel}${localSize}？下次使用该模型需要重新下载。`,
+    )
+    if (!ok) return
+
+    setDeletingModels(prev => ({ ...prev, [model.model_size]: true }))
+    try {
+      const result = await deleteModelCache(model.model_size)
+      if (isSkippedApiResult(result)) {
+        toast.success('后端模型删除接口暂未实现，已跳过')
+        return
+      }
+
+      const payload = result as {
+        status?: string
+        message?: string
+        freed_bytes?: number
+        deleted?: boolean
+      }
+      if (payload.status === 'deleted' || payload.deleted) {
+        toast.success(`已删除模型缓存，释放 ${formatBytes(payload.freed_bytes || 0)}`)
+      } else if (payload.status === 'not_found') {
+        toast.success(payload.message || '模型缓存已不存在')
+      } else {
+        toast.error(payload.message || '删除模型缓存失败')
+      }
+      await refreshStatus()
+    } catch (error) {
+      console.error('删除模型缓存失败:', error)
+      toast.error('删除模型缓存失败')
+    } finally {
+      setDeletingModels(prev => {
+        const next = { ...prev }
+        delete next[model.model_size]
+        return next
+      })
+    }
+  }
+
   // 安装 GPU 驱动
   const handleInstallGPU = async () => {
     setGpuInstalling(true)
@@ -2336,10 +2667,10 @@ function TranscriberSection() {
     try {
       const result = await installGPUDrivers()
       setGpuInstallTaskId(result.task_id)
-      toast.success('GPU 驱动安装已启动')
+      toast.success('GPU 加速依赖安装已启动')
     } catch {
       setGpuInstalling(false)
-      toast.error('启动 GPU 驱动安装失败')
+      toast.error('启动 GPU 加速依赖安装失败')
     }
   }
 
@@ -2363,7 +2694,7 @@ function TranscriberSection() {
               </div>
             )}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div>
+              <div className="min-w-0">
                 <label className="mb-2 block text-xs font-medium text-neutral-400">转写器类型</label>
                 <select
                   value={selectedType}
@@ -2376,10 +2707,24 @@ function TranscriberSection() {
                     </option>
                   ))}
                 </select>
+                <div className="mt-3 rounded-lg border border-neutral-800 bg-[#1A1A1A] p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium text-neutral-200">{selectedTypeDetail.title}</span>
+                    {selectedTypeDetail.badges.map(badge => (
+                      <span
+                        key={badge}
+                        className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-400"
+                      >
+                        {badge}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-neutral-500">{selectedTypeDetail.description}</p>
+                </div>
               </div>
 
               {isWhisperType(selectedType) && (
-                <div>
+                <div className="min-w-0">
                   <label className="mb-2 block text-xs font-medium text-neutral-400">
                     Whisper 模型
                   </label>
@@ -2388,15 +2733,190 @@ function TranscriberSection() {
                     onChange={event => setSelectedModel(event.target.value)}
                     className="w-full rounded-lg border border-neutral-800 bg-[#1A1A1A] px-3 py-2 text-sm text-neutral-200 outline-none"
                   >
-                    {config.whisper_model_sizes.map(size => (
-                      <option key={size} value={size}>
-                        {size}
-                      </option>
-                    ))}
+                    {config.whisper_model_sizes.map(size => {
+                      const status = statusByModel.get(size)
+                      const detail = getWhisperModelDetail(status, size)
+                      const cachedLabel = status?.downloaded
+                        ? '已缓存'
+                        : status?.partial
+                          ? '未完整'
+                          : status?.downloading
+                            ? '下载中'
+                            : '未下载'
+                      return (
+                        <option key={size} value={size}>
+                          {size} · {detail.size} · {cachedLabel}
+                        </option>
+                      )
+                    })}
                   </select>
+                  <div className="mt-3 rounded-lg border border-neutral-800 bg-[#1A1A1A] p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-neutral-200">{selectedModel}</span>
+                      <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-400">
+                        {selectedModelDetail.size}
+                      </span>
+                      <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-400">
+                        {selectedModelDetail.quality}
+                      </span>
+                      <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-400">
+                        {selectedModelDetail.speed}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-neutral-500">
+                      Whisper 模型是语音识别模型尺寸；越大通常越准，也越占磁盘、显存和时间。
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
+
+            {isWhisperType(selectedType) && (
+              <div className="rounded-lg border border-neutral-800 bg-[#1A1A1A] p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-neutral-200">模型资源</div>
+                    <div className="mt-1 text-xs leading-5 text-neutral-500">
+                      扫描 HuggingFace 本地缓存；已缓存模型会直接复用，下载时不会重复拉取。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => refreshStatus(true)}
+                    disabled={statusRefreshing}
+                    className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-neutral-700 px-3 text-xs text-neutral-300 transition-colors hover:bg-neutral-800 disabled:opacity-50"
+                  >
+                    {statusRefreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+                    重新扫描缓存
+                  </button>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-neutral-300">
+                    已下载 {downloadedModels.length}/{modelRows.length}
+                  </span>
+                  <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-neutral-300">
+                    当前 {currentStatus ? getModelStateBadge(currentStatus) : '未知'}
+                  </span>
+                  {lastScannedAt && (
+                    <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-neutral-400">
+                      上次扫描 {lastScannedAt}
+                    </span>
+                  )}
+                </div>
+
+                {currentStatus ? (
+                  <div className="mt-4 rounded-lg border border-neutral-800 bg-[#101010] p-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-medium text-neutral-100">{selectedModel}</span>
+                          <span className={`rounded-full border px-2 py-0.5 text-[11px] ${getModelStateClass(currentStatus)}`}>
+                            {getModelStateBadge(currentStatus)}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-neutral-500">
+                          {getModelStateLabel(currentStatus, currentProgress)}
+                        </div>
+                        {selectedModelDetail.repoId && (
+                          <div className="mt-1 truncate text-[11px] text-neutral-600">
+                            仓库: {selectedModelDetail.repoId}
+                          </div>
+                        )}
+                      </div>
+                      {!currentStatus.downloaded && !currentStatus.downloading && (
+                        <button
+                          type="button"
+                          onClick={handleDownloadSelectedModel}
+                          className="flex items-center justify-center gap-1.5 rounded-lg bg-neutral-800 px-3 py-2 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
+                        >
+                          <Download size={14} />
+                          {currentStatus.failed ? '重试下载' : '下载当前模型'}
+                        </button>
+                      )}
+                      {(currentStatus.downloaded || currentStatus.partial) && !currentStatus.downloading && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteModelCache(currentStatus)}
+                          disabled={deletingModels[currentStatus.model_size]}
+                          className="flex items-center justify-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-200 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+                        >
+                          {deletingModels[currentStatus.model_size] ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
+                          {deletingModels[currentStatus.model_size] ? '删除中' : '删除缓存'}
+                        </button>
+                      )}
+                      {currentStatus.downloading && (
+                        <Loader2 size={16} className="animate-spin text-neutral-400" />
+                      )}
+                    </div>
+                    {currentStatus.downloading && currentProgress > 0 && (
+                      <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all duration-500"
+                          style={{ width: `${Math.min(currentProgress, 100)}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-lg border border-neutral-800 bg-[#101010] px-3 py-2 text-xs text-neutral-500">
+                    暂无模型状态，请重新扫描本地缓存。
+                  </div>
+                )}
+
+                <div className="mt-4 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                  {modelRows.map(status => {
+                    const detail = getWhisperModelDetail(status, status.model_size)
+                    const progress = getModelProgress(status, downloadProgress)
+                    const selected = status.model_size === selectedModel
+                    return (
+                      <button
+                        key={status.model_size}
+                        type="button"
+                        onClick={() => setSelectedModel(status.model_size)}
+                        className={`min-w-0 rounded-lg border p-3 text-left transition-colors ${
+                          selected
+                            ? 'border-primary/60 bg-primary/10'
+                            : 'border-neutral-800 bg-[#141414] hover:border-neutral-700'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-medium text-neutral-200">{status.model_size}</span>
+                              <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-400">
+                                {detail.size}
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate text-[11px] text-neutral-600">
+                              {detail.repoId || '自定义模型'}
+                            </div>
+                          </div>
+                          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${getModelStateClass(status)}`}>
+                            {getModelStateBadge(status)}
+                          </span>
+                        </div>
+                        <div className="mt-2 text-xs text-neutral-500">
+                          {getModelStateLabel(status, progress)}
+                        </div>
+                        {status.downloading && progress > 0 && (
+                          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
+                            <div
+                              className="h-full rounded-full bg-primary transition-all duration-500"
+                              style={{ width: `${Math.min(progress, 100)}%` }}
+                            />
+                          </div>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* ── GPU 加速区域 ── */}
             {isWhisperType(selectedType) && (
@@ -2476,12 +2996,12 @@ function TranscriberSection() {
                     ) : gpuDepsReady ? (
                       <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
                         <CheckCircle2 size={14} />
-                        GPU 驱动已安装，可启用 GPU 加速
+                        GPU 加速依赖已就绪，可启用 GPU 加速
                       </div>
                     ) : (
                       <div className="space-y-2">
                         <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                          <span>GPU 驱动未安装</span>
+                          <span>GPU 加速依赖未就绪</span>
                         </div>
                         {gpuInstalling ? (
                           <div className="space-y-2">
@@ -2505,7 +3025,7 @@ function TranscriberSection() {
                             className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary/80"
                           >
                             <Download size={14} />
-                            安装 GPU 驱动（{gpuInfo?.recommended_package || 'nvidia-cublas-cu12'}）
+                            安装 GPU 加速依赖（{gpuInfo?.recommended_package || 'nvidia-cublas-cu12'}）
                           </button>
                         )}
                       </div>
@@ -2535,54 +3055,6 @@ function TranscriberSection() {
                         : '始终使用 CPU 转写，速度较慢但兼容性最好'}
                   </div>
                 </div>
-              </div>
-            )}
-
-            {isWhisperType(selectedType) && currentStatus && (
-              <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-[#1A1A1A] p-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-medium text-neutral-200">{selectedModel}</div>
-                    <div className="mt-1 text-xs text-neutral-500">
-                      {currentStatus.downloaded
-                        ? '模型已就绪'
-                        : currentStatus.downloading
-                          ? `模型下载中 ${currentProgress > 0 ? `${currentProgress.toFixed(1)}%` : ''}`
-                          : currentStatus.failed
-                            ? currentStatus.error || '模型下载失败'
-                            : '模型尚未下载'}
-                    </div>
-                  </div>
-                  {!currentStatus.downloaded && !currentStatus.downloading && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const result = await downloadModel({ model_size: selectedModel, transcriber_type: selectedType })
-                        if (isSkippedApiResult(result)) {
-                          toast.success('后端模型下载接口暂未实现，已跳过')
-                        } else {
-                          toast.success('模型下载已开始')
-                        }
-                        setTimeout(() => refreshStatus(), 800)
-                      }}
-                      className="flex items-center gap-1.5 rounded-lg bg-neutral-800 px-3 py-2 text-xs text-neutral-200 transition-colors hover:bg-neutral-700"
-                    >
-                      <Download size={14} />
-                      {currentStatus.failed ? '重试' : '下载'}
-                    </button>
-                  )}
-                  {currentStatus.downloading && (
-                    <Loader2 size={16} className="animate-spin text-neutral-400" />
-                  )}
-                </div>
-                {currentStatus.downloading && currentProgress > 0 && (
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
-                    <div
-                      className="h-full rounded-full bg-primary transition-all duration-500"
-                      style={{ width: `${Math.min(currentProgress, 100)}%` }}
-                    />
-                  </div>
-                )}
               </div>
             )}
 
