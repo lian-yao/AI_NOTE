@@ -11,24 +11,36 @@ from pathlib import Path
 from app.core.paths import project_root
 
 
-# 持久化文件（data/platform_cookies.json，data/ 已在 .gitignore）
-_PERSIST_FILE = os.path.join(str(project_root()), "data", "platform_cookies.json")
-
 # 内存缓存
 _cache: dict[str, str] | None = None
 
 
+def _persist_file() -> Path:
+    """Cookie 主存储路径，应跟随桌面端/服务端运行时数据目录。"""
+    from app.core.config import settings
+
+    return Path(settings.data_dir) / "platform_cookies.json"
+
+
+def _legacy_persist_file() -> Path:
+    """早期版本写到项目 data/ 下，保留读取兼容。"""
+    return project_root() / "data" / "platform_cookies.json"
+
+
 def _load() -> dict[str, str]:
     data: dict[str, str] = {}
-    if not os.path.isfile(_PERSIST_FILE):
-        return _load_legacy_frontend_cookies()
-    try:
-        with open(_PERSIST_FILE, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-            if isinstance(loaded, dict):
-                data = {str(k): str(v) for k, v in loaded.items() if isinstance(v, str)}
-    except (json.JSONDecodeError, OSError):
-        data = {}
+    for persist_file in (_persist_file(), _legacy_persist_file()):
+        if not persist_file.is_file():
+            continue
+        try:
+            with persist_file.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data.update(
+                        {str(k): str(v) for k, v in loaded.items() if isinstance(v, str)}
+                    )
+        except (json.JSONDecodeError, OSError):
+            pass
 
     for platform, cookie in _load_legacy_frontend_cookies().items():
         data.setdefault(platform, cookie)
@@ -56,8 +68,9 @@ def _load_legacy_frontend_cookies() -> dict[str, str]:
 
 
 def _save(data: dict[str, str]) -> None:
-    os.makedirs(os.path.dirname(_PERSIST_FILE) or ".", exist_ok=True)
-    with open(_PERSIST_FILE, "w", encoding="utf-8") as f:
+    persist_file = _persist_file()
+    os.makedirs(persist_file.parent, exist_ok=True)
+    with persist_file.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 

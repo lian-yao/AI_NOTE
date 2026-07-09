@@ -158,7 +158,12 @@ export interface DeployStatus {
   whisper: {
     model_size: string
     transcriber_type: string
+    device?: string
     downloaded: boolean
+    partial?: boolean
+    downloaded_size_bytes?: number | null
+    cache_size_bytes?: number | null
+    cache_path?: string | null
   }
   ffmpeg: {
     available: boolean

@@ -3150,6 +3150,12 @@ function MonitorSection() {
   }, [])
 
   const backendOk = status?.backend.status === 'ok' || status?.backend.status === 'running'
+  const whisperState = status?.whisper.downloaded
+    ? '已缓存'
+    : status?.whisper.partial
+      ? '未完整'
+      : '未下载'
+  const whisperAvailable = status?.whisper.downloaded === true
 
   return (
     <section>
@@ -3187,10 +3193,10 @@ function MonitorSection() {
           title="转写"
           value={
             status
-              ? `${status.whisper.transcriber_type || 'unknown'} / ${status.whisper.model_size || '-'}`
+              ? `${status.whisper.transcriber_type || 'unknown'} / ${status.whisper.model_size || '-'} / ${status.whisper.device || 'auto'} / ${whisperState}`
               : '未知'
           }
-          ok={status ? true : undefined}
+          ok={status ? whisperAvailable : undefined}
         />
         <StatusCard
           icon={<Database size={18} />}

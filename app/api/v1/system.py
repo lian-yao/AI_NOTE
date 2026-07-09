@@ -107,7 +107,7 @@ def get_system_config():
         "llm_model": getattr(settings, 'llm_model', 'qwen-plus'),
         "transcriber_mode": tc.get("transcriber_type", "local"),
         "whisper_model_size": tc.get("whisper_model_size", settings.whisper_model_size),
-        "whisper_device": settings.whisper_device,
+        "whisper_device": tc.get("whisper_device", settings.whisper_device),
         "embedding_model": get_embedding_model_config()["model"],
         "retrieval_top_k": settings.retrieval_top_k,
         "data_dir": settings.data_dir,
@@ -649,13 +649,34 @@ async def deploy_status():
     except ImportError:
         pass
 
+    transcriber_config = _load_transcriber_config()
+    transcriber_type = transcriber_config.get("transcriber_type") or "fast-whisper"
+    whisper_model_size = transcriber_config.get("whisper_model_size") or settings.whisper_model_size
+    whisper_device = transcriber_config.get("whisper_device") or settings.whisper_device
+    whisper_status = {
+        "downloaded": False,
+        "downloaded_size_bytes": None,
+        "cache_size_bytes": None,
+        "cache_path": None,
+        "partial": False,
+    }
+    if transcriber_type == "fast-whisper" and whisper_model_size:
+        try:
+            from app.transcriber.model_manager import get_model_status
+
+            whisper_status.update(get_model_status(whisper_model_size) or {})
+        except Exception:
+            pass
+
+    backend_port = int(os.environ.get("BACKEND_PORT", "8000"))
+
     return {
         "code": 0,
         "message": "success",
         "data": {
             "backend": {
                 "status": "ok",
-                "port": 8000
+                "port": backend_port
             },
             "ffmpeg": {
                 "available": ffmpeg_available
@@ -667,9 +688,14 @@ async def deploy_status():
                 "gpu_name": gpu_name
             },
             "whisper": {
-                "model_size": "base",
-                "transcriber_type": "fast-whisper",
-                "downloaded": False
+                "model_size": whisper_model_size,
+                "transcriber_type": transcriber_type,
+                "device": whisper_device,
+                "downloaded": bool(whisper_status.get("downloaded")),
+                "partial": bool(whisper_status.get("partial")),
+                "downloaded_size_bytes": whisper_status.get("downloaded_size_bytes"),
+                "cache_size_bytes": whisper_status.get("cache_size_bytes"),
+                "cache_path": whisper_status.get("cache_path"),
             }
         }
     }
