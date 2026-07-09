@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useBackendEvents } from './useBackendEvents'
-import BackendLogPanel from './BackendLogPanel'
+import { openBackendLogWindow } from './openBackendLogWindow'
 import { getApiBaseURL } from '@/utils/api'
 
 // 健康度判定：
@@ -16,8 +16,7 @@ const HEALTH_POLL_MS = 5000
 const SYS_HEALTH_PATH = '/system/health'
 
 const BackendHealthIndicator = () => {
-  const { status, isTauri, exitCode, logs, restart, copyLogs } = useBackendEvents()
-  const [open, setOpen] = useState(false)
+  const { status, isTauri, exitCode } = useBackendEvents()
   const [healthCheckFailures, setHealthCheckFailures] = useState(0)
   const [lastHealthOk, setLastHealthOk] = useState<boolean | null>(null)
 
@@ -81,28 +80,14 @@ const BackendHealthIndicator = () => {
   }
 
   return (
-    <>
-      <button
-        className="fixed right-3 bottom-3 z-[9998] flex items-center gap-2 rounded-full border bg-white px-3 py-1.5 text-xs shadow hover:shadow-md"
-        title={labelMap[health]}
-        onClick={() => setOpen(true)}
-      >
-        <span className={`inline-block h-2 w-2 rounded-full ${colorMap[health]}${health === 'red' || health === 'yellow' ? ' animate-pulse' : ''}`} />
-        <span className="text-gray-700">后端</span>
-      </button>
-
-      {open && (
-        <BackendLogPanel
-          status={status}
-          exitCode={exitCode}
-          logs={logs}
-          health={health}
-          onRestart={restart}
-          onCopyLogs={copyLogs}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
+    <button
+      className="fixed right-3 bottom-3 z-[9998] flex items-center gap-2 rounded-full border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-xs text-neutral-200 shadow-xl shadow-black/30 transition-colors hover:bg-neutral-900"
+      title={`${labelMap[health]}，点击打开后端日志窗口`}
+      onClick={() => { void openBackendLogWindow() }}
+    >
+      <span className={`inline-block h-2 w-2 rounded-full ${colorMap[health]}${health === 'red' || health === 'yellow' ? ' animate-pulse' : ''}`} />
+      <span>后端</span>
+    </button>
   )
 }
 

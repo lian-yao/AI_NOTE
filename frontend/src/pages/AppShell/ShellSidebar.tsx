@@ -1,5 +1,6 @@
-import { LayoutDashboard, Library, MessageCircle, PlusCircle, Settings } from 'lucide-react'
+import { LayoutDashboard, Library, MessageCircle, PlusCircle, Settings, Terminal } from 'lucide-react'
 import type { ComponentType } from 'react'
+import { openBackendLogWindow } from '@/components/BackendHealth/openBackendLogWindow'
 import type { ShellView } from './utils'
 
 interface ShellSidebarProps {
@@ -29,6 +30,8 @@ export default function ShellSidebar({
   onChangeView,
   onPreviewView,
 }: ShellSidebarProps) {
+  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
   return (
     <aside className="relative z-50 flex h-full w-[68px] shrink-0 flex-col items-center overflow-visible border-r border-neutral-800 bg-[#111111] py-4">
       <div className="mt-4 flex w-full flex-col items-center gap-4">
@@ -62,6 +65,17 @@ export default function ShellSidebar({
       </div>
 
       <div className="mt-auto flex w-full flex-col items-center gap-4">
+        {isTauri && (
+          <button
+            type="button"
+            onClick={() => { void openBackendLogWindow() }}
+            className="group relative flex h-10 w-10 items-center justify-center rounded-xl text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-neutral-300"
+            aria-label="后端日志"
+          >
+            <Terminal size={20} />
+            <SidebarTooltip label="后端日志" />
+          </button>
+        )}
         <button
           type="button"
           onFocus={() => onPreviewView?.('settings')}

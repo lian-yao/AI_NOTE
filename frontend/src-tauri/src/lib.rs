@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -15,6 +15,7 @@ use tauri_plugin_shell::ShellExt;
 // 实测 macOS / Windows 慢盘大概 5-20s，设 45s 留余量但不至于让用户绝望。
 const BACKEND_STARTUP_TIMEOUT_SECS: u64 = 45;
 const BACKEND_DEFAULT_PORT: u16 = 8483;
+const BACKEND_LOG_BUFFER_LINES: usize = 200;
 
 // Sidecar 子进程句柄和 PID，用 Mutex 包裹方便关闭 / restart 时杀旧进程树。
 struct BackendSidecar {
@@ -23,6 +24,49 @@ struct BackendSidecar {
 }
 
 struct SidecarHandle(Mutex<Option<BackendSidecar>>);
+
+#[derive(Serialize, Clone)]
+struct BackendLogEntry {
+    level: String,
+    text: String,
+    ts: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BackendLogSnapshot {
+    status: String,
+    exit_code: Option<i32>,
+    logs: Vec<BackendLogEntry>,
+}
+
+struct BackendLogStateData {
+    status: String,
+    exit_code: Option<i32>,
+    logs: Vec<BackendLogEntry>,
+    restarting_until_ms: u128,
+}
+
+impl BackendLogStateData {
+    fn new() -> Self {
+        Self {
+            status: "running".to_string(),
+            exit_code: None,
+            logs: Vec::new(),
+            restarting_until_ms: 0,
+        }
+    }
+
+    fn snapshot(&self) -> BackendLogSnapshot {
+        BackendLogSnapshot {
+            status: self.status.clone(),
+            exit_code: self.exit_code,
+            logs: self.logs.clone(),
+        }
+    }
+}
+
+struct BackendLogState(Mutex<BackendLogStateData>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -68,6 +112,8 @@ pub fn run() {
             // 检查 ffmpeg 是否在 PATH 中可用
             check_ffmpeg_availability();
 
+            app.manage(BackendLogState(Mutex::new(BackendLogStateData::new())));
+
             // 启动 Sidecar 并把 child handle 存到 state，方便后续 restart_backend_sidecar 使用
             let child = spawn_backend_sidecar(app.handle()).map_err(|e| {
                 eprintln!("Sidecar 启动失败: {}", e);
@@ -91,6 +137,7 @@ pub fn run() {
             run_command_with_env,
             test_ffmpeg_access,
             get_install_path_diagnostics,
+            get_backend_log_snapshot,
             restart_backend_sidecar
         ])
         .build(tauri::generate_context!())
@@ -158,6 +205,87 @@ fn kill_backend_process_tree(pid: u32) {
 
 #[cfg(not(target_os = "windows"))]
 fn kill_backend_process_tree(_pid: u32) {}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn push_backend_log(app_handle: &tauri::AppHandle, level: &str, text: String) {
+    if let Some(state) = app_handle.try_state::<BackendLogState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            guard.logs.push(BackendLogEntry {
+                level: level.to_string(),
+                text,
+                ts: now_millis() as u64,
+            });
+            if guard.logs.len() > BACKEND_LOG_BUFFER_LINES {
+                let excess = guard.logs.len() - BACKEND_LOG_BUFFER_LINES;
+                guard.logs.drain(0..excess);
+            }
+        }
+    }
+}
+
+fn mark_backend_restarting(app_handle: &tauri::AppHandle) {
+    if let Some(state) = app_handle.try_state::<BackendLogState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            guard.restarting_until_ms = now_millis() + 3000;
+        }
+    }
+    push_backend_log(app_handle, "info", "[Backend restarting]".to_string());
+}
+
+fn mark_backend_running(app_handle: &tauri::AppHandle) {
+    if let Some(state) = app_handle.try_state::<BackendLogState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            guard.status = "running".to_string();
+            guard.exit_code = None;
+        }
+    }
+    push_backend_log(app_handle, "info", "[Backend restarted]".to_string());
+}
+
+fn mark_backend_terminated(app_handle: &tauri::AppHandle, code: Option<i32>) {
+    let restarting = if let Some(state) = app_handle.try_state::<BackendLogState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            let restarting = now_millis() <= guard.restarting_until_ms;
+            if !restarting {
+                guard.status = "terminated".to_string();
+                guard.exit_code = code;
+            }
+            restarting
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let text = if restarting {
+        format!(
+            "[Backend terminated, restart in progress] code={}",
+            code.map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        )
+    } else {
+        format!(
+            "[Backend terminated] code={}",
+            code.map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        )
+    };
+    push_backend_log(app_handle, if restarting { "info" } else { "error" }, text);
+}
+
+#[tauri::command]
+fn get_backend_log_snapshot(state: State<'_, BackendLogState>) -> BackendLogSnapshot {
+    state
+        .0
+        .lock()
+        .map(|guard| guard.snapshot())
+        .unwrap_or_else(|_| BackendLogStateData::new().snapshot())
+}
 
 // 获取额外的二进制路径
 fn get_additional_binary_paths() -> Vec<String> {
@@ -387,28 +515,23 @@ fn spawn_backend_sidecar(app_handle: &tauri::AppHandle) -> Result<CommandChild, 
     let app_handle_for_listener = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
-            // window 句柄每次重新取，允许窗口关闭重开
-            let window = app_handle_for_listener.get_webview_window("main");
             match event {
                 CommandEvent::Stdout(line) => {
                     let output = String::from_utf8_lossy(&line).to_string();
                     println!("Backend stdout: {}", output);
-                    if let Some(w) = window {
-                        let _ = w.emit("backend-message", Some(output));
-                    }
+                    push_backend_log(&app_handle_for_listener, "info", output.clone());
+                    let _ = app_handle_for_listener.emit("backend-message", output);
                 }
                 CommandEvent::Stderr(line) => {
                     let error = String::from_utf8_lossy(&line).to_string();
                     eprintln!("Backend stderr: {}", error);
-                    if let Some(w) = window {
-                        let _ = w.emit("backend-error", Some(error));
-                    }
+                    push_backend_log(&app_handle_for_listener, "error", error.clone());
+                    let _ = app_handle_for_listener.emit("backend-error", error);
                 }
                 CommandEvent::Terminated(payload) => {
                     println!("Backend terminated with code: {:?}", payload.code);
-                    if let Some(w) = window {
-                        let _ = w.emit("backend-terminated", Some(payload.code));
-                    }
+                    mark_backend_terminated(&app_handle_for_listener, payload.code);
+                    let _ = app_handle_for_listener.emit("backend-terminated", payload.code);
                     break;
                 }
                 _ => {
@@ -455,9 +578,8 @@ fn restart_backend_sidecar(
     // 0. 先告诉前端「我们要重启了」。前端可以借此忽略接下来 N 秒内的 backend-terminated
     //    事件——那是我们主动 kill 老 sidecar 的副作用，不是真异常。否则会出现：
     //    terminated 事件延迟到达 → 覆盖掉 'running' 状态 → 面板永远显示「已退出」。
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.emit("backend-restarting", ());
-    }
+    mark_backend_restarting(&app);
+    let _ = app.emit("backend-restarting", ());
     // 1. 拿出旧 child 并 kill（kill 失败也继续，可能进程已经退了）
     {
         let mut guard = state
@@ -482,9 +604,8 @@ fn restart_backend_sidecar(
         });
     }
     // 3. emit 一个事件让前端知道已重启
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.emit("backend-restarted", ());
-    }
+    mark_backend_running(&app);
+    let _ = app.emit("backend-restarted", ());
     // 4. 重启后同样起一次 ready probe，让前端能及时退出失败态
     spawn_backend_ready_probe(app);
     Ok(())

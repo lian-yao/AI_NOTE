@@ -20,7 +20,7 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react'
-import logo from '@/assets/logo.png'
+import logo from '@/assets/icon.svg'
 import type { IProvider } from '@/types'
 import {
   addModel,

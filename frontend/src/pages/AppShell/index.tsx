@@ -1,17 +1,18 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { isMockBackend, isMockLikeTask, useTaskStore } from '@/store/taskStore'
 import GenerateView from './GenerateView'
-import GlobalQA from './GlobalQA'
 import ShellSidebar from './ShellSidebar'
 import type { ShellView } from './utils'
 
 const loadLibraryView = () => import('./LibraryView')
 const loadSettingsView = () => import('./SettingsView')
 const loadWorkspaceView = () => import('./WorkspaceView')
+const loadGlobalQA = () => import('./GlobalQA')
 
 const LibraryView = lazy(loadLibraryView)
 const SettingsView = lazy(loadSettingsView)
 const WorkspaceView = lazy(loadWorkspaceView)
+const GlobalQA = lazy(loadGlobalQA)
 
 interface AppShellProps {
   initialView?: ShellView
@@ -158,6 +159,7 @@ export default function AppShell({
     if (view === 'summary') loadWorkspaceView()
     if (view === 'library') loadLibraryView()
     if (view === 'settings') loadSettingsView()
+    if (view === 'qa') loadGlobalQA()
   }
 
   const handleCloseTask = (taskId: string) => {
@@ -226,8 +228,10 @@ export default function AppShell({
           </div>
         )}
         {currentView === 'qa' && (
-          <div className='absolute inset-0 z-10 flex flex-col'>
-            <GlobalQA />
+          <div className="absolute inset-0 z-10 flex flex-col">
+            <Suspense fallback={<GenericViewFallback />}>
+              <GlobalQA />
+            </Suspense>
           </div>
         )}
       </main>

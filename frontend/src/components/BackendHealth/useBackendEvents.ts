@@ -18,6 +18,12 @@ export type BackendStatus = 'running' | 'terminated'
 
 const MAX_LOG_LINES = 200
 
+interface BackendLogSnapshot {
+  status: BackendStatus
+  exitCode: number | null
+  logs: LogEntry[]
+}
+
 interface BackendEvents {
   status: BackendStatus
   exitCode: number | null
@@ -45,6 +51,21 @@ export function useBackendEvents(): BackendEvents {
       next.splice(0, next.length - MAX_LOG_LINES)
     logsRef.current = next
     setLogs(next)
+  }
+
+  function applySnapshot(snapshot: BackendLogSnapshot) {
+    const snapshotLogs = Array.isArray(snapshot.logs) ? snapshot.logs : []
+    const seen = new Set(snapshotLogs.map(logKey))
+    const liveLogs = logsRef.current.filter(entry => !seen.has(logKey(entry)))
+    const next = snapshotLogs.concat(liveLogs)
+    if (next.length > MAX_LOG_LINES)
+      next.splice(0, next.length - MAX_LOG_LINES)
+    logsRef.current = next
+    setLogs(next)
+    if (snapshot.status === 'running' || snapshot.status === 'terminated') {
+      setStatus(snapshot.status)
+      setExitCode(snapshot.exitCode ?? null)
+    }
   }
 
   useEffect(() => {
@@ -93,6 +114,15 @@ export function useBackendEvents(): BackendEvents {
       })
 
       unlisteners = [offMsg, offErr, offRestarting, offTerm, offRestart]
+
+      const { invoke } = await import('@tauri-apps/api/core')
+      try {
+        const snapshot = await invoke<BackendLogSnapshot>('get_backend_log_snapshot')
+        applySnapshot(snapshot)
+      }
+      catch {
+        // 旧版桌面端没有快照命令时，继续只显示实时日志。
+      }
     })()
 
     return () => {
@@ -135,4 +165,8 @@ function stripQuotes(s: string): string {
   if (s.length >= 2 && s.startsWith("'") && s.endsWith("'"))
     return s.slice(1, -1)
   return s
+}
+
+function logKey(entry: LogEntry): string {
+  return `${entry.ts}:${entry.level}:${entry.text}`
 }

@@ -90,6 +90,7 @@ import {
 import { isSkippedApiResult } from '@/services/fallback'
 import { IconSwitch } from './components/IconSwitch'
 import BackendInitDialog from '@/components/BackendInitDialog'
+import BackendHealthIndicator from '@/components/BackendHealth/BackendHealthIndicator'
 
 type ProviderDraft = Omit<IProvider, 'id'> & { id?: string }
 type SettingsSectionId = 'configuration' | 'provider' | 'platform' | 'transcriber' | 'storage' | 'monitor'
@@ -351,6 +352,7 @@ export default function SettingsView({
 
   return (
     <div className="custom-scrollbar flex-1 overflow-y-auto bg-[#0E0E0E] text-neutral-200">
+      <BackendHealthIndicator />
       <div className="mx-auto max-w-6xl px-8 py-10">
         <div className="mb-8 flex flex-col gap-2">
           <h1 className="text-2xl font-bold">设置</h1>
