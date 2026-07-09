@@ -48,7 +48,7 @@ const assistantMarkdownClassName = cn(
   '[&_blockquote_p]:my-0.5 [&_blockquote_p]:text-neutral-200',
 )
 
-function stripInlineReferenceSection(content: string) {
+function cleanAnswer(content: string) {
   const markerIndex = content.search(
     /\n{0,2}---\s*\n\s*(?:\*\*)?\s*引用来源\s*(?:\*\*)?\s*[：:]/,
   )
@@ -176,7 +176,7 @@ export default function ChatPanel({
             .filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant'))
             .map(msg => ({
               ...msg,
-              content: stripInlineReferenceSection(
+              content: cleanAnswer(
                 typeof msg.content === 'string' ? msg.content : String(msg.content ?? ''),
               ),
               sources: Array.isArray(msg.sources) ? msg.sources : undefined,
@@ -272,7 +272,7 @@ export default function ChatPanel({
           },
           token => {
             answer += token
-            const cleanedAnswer = stripInlineReferenceSection(answer)
+            const cleanedAnswer = cleanAnswer(answer)
             setStreamingAssistant(prev => ({
               content: cleanedAnswer,
               sources: prev?.sources ?? sources,
@@ -281,14 +281,14 @@ export default function ChatPanel({
           nextSources => {
             sources = nextSources
             setStreamingAssistant(prev => ({
-              content: prev?.content ?? stripInlineReferenceSection(answer),
+              content: prev?.content ?? cleanAnswer(answer),
               sources,
             }))
           },
           () => undefined,
         )
 
-        const cleanedAnswer = stripInlineReferenceSection(answer)
+        const cleanedAnswer = cleanAnswer(answer)
         addMessage(taskId, {
           role: 'assistant',
           content: cleanedAnswer.trim() ? cleanedAnswer : '未生成回答',
