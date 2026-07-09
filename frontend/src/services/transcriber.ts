@@ -366,6 +366,8 @@ export const getGPUInfo = async (opts?: CallOpts): Promise<GPUInfo> => {
       gpu_name: null,
       driver_version: null,
       recommended_package: null,
+      installed_package: null,
+      package_mismatch: false,
       gpu_deps_installed: false,
       torch_cuda_available: false,
       torch_installed: false,

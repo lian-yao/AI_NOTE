@@ -38,6 +38,7 @@ dev = [
 gpu = [
     # GPU 加速依赖（可选安装）
     # CUDA 12.x 用户: uv sync --group gpu
-    # CUDA 11.x 用户需手动安装: pip install nvidia-cublas-cu11
+    # CUDA 11.x 用户需手动安装: pip install nvidia-cublas-cu11 nvidia-cudnn-cu11
     "nvidia-cublas-cu12>=12.0.0",
+    "nvidia-cudnn-cu12>=9.0.0",
 ]

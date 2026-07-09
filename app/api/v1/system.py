@@ -27,6 +27,7 @@ from app.core.model_usage import (
 )
 from app.transcriber.cuda_runtime import (
     detect_cublas_dll_package,
+    detect_cudnn_dll_package,
     gpu_python_packages_dir,
     iter_python_site_package_dirs,
 )
@@ -1001,6 +1002,30 @@ def _detect_installed_cublas_package() -> str | None:
     return None
 
 
+def _detect_installed_cudnn_package() -> str | None:
+    """检测已安装的 nvidia-cudnn-cuXX 包名。"""
+    try:
+        import importlib.metadata
+        for pkg_name in ("nvidia-cudnn-cu12", "nvidia-cudnn-cu11"):
+            try:
+                importlib.metadata.version(pkg_name)
+                return pkg_name
+            except importlib.metadata.PackageNotFoundError:
+                pass
+    except Exception:
+        pass
+
+    normalized_names = {
+        "nvidia-cudnn-cu12": "nvidia_cudnn_cu12",
+        "nvidia-cudnn-cu11": "nvidia_cudnn_cu11",
+    }
+    for site_dir in iter_python_site_package_dirs():
+        for pkg_name, normalized in normalized_names.items():
+            if any(site_dir.glob(f"{normalized}-*.dist-info")):
+                return pkg_name
+    return None
+
+
 def _detect_cublas_dll_package() -> str | None:
     """Detect usable cuBLAS DLLs without relying on pip metadata.
 
@@ -1011,16 +1036,23 @@ def _detect_cublas_dll_package() -> str | None:
     return detect_cublas_dll_package()
 
 
-def _detect_cublas_installed() -> bool:
-    """检测当前运行环境中的 cuBLAS 是否可用且版本与 CUDA 驱动匹配。"""
-    installed_pkg = _detect_installed_cublas_package() or _detect_cublas_dll_package()
+def _detect_cudnn_dll_package() -> str | None:
+    return detect_cudnn_dll_package()
+
+
+def _detect_gpu_runtime_installed() -> bool:
+    """检测当前运行环境中的 CUDA 转写依赖是否完整且版本与驱动匹配。"""
+    installed_cublas = _detect_installed_cublas_package() or _detect_cublas_dll_package()
+    installed_cudnn = _detect_installed_cudnn_package() or _detect_cudnn_dll_package()
 
     # 获取 CUDA 驱动版本，检查与已安装包的匹配
     cuda_version, _ = _detect_cuda_version()
-    recommended = _get_recommended_package(cuda_version)
+    recommended_cublas, recommended_cudnn = _get_recommended_packages(cuda_version)
 
     # 版本不匹配：驱动是 11.x 但装的是 cu12（或反过来）
-    if installed_pkg and recommended and recommended != installed_pkg:
+    if installed_cublas and recommended_cublas and recommended_cublas != installed_cublas:
+        return False
+    if installed_cudnn and recommended_cudnn and recommended_cudnn != installed_cudnn:
         return False
 
     # 检查 DLL 是否可被 ctranslate2 加载；如果 DLL 已在用户 Python / AppData
@@ -1032,22 +1064,21 @@ def _detect_cublas_installed() -> bool:
     except Exception:
         pass
 
-    return installed_pkg is not None
+    return installed_cublas is not None and installed_cudnn is not None
 
 
-def _get_recommended_package(cuda_version: str | None) -> str:
+def _get_recommended_packages(cuda_version: str | None) -> tuple[str, str]:
     """根据 CUDA 版本推荐 pip 包名。"""
     if cuda_version is None:
-        return "nvidia-cublas-cu12"
+        return ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
     try:
         major = int(cuda_version.split(".")[0])
-        minor = int(cuda_version.split(".")[1]) if len(cuda_version.split(".")) > 1 else 0
         if major >= 12:
-            return "nvidia-cublas-cu12"
+            return ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
         else:
-            return "nvidia-cublas-cu11"
+            return ("nvidia-cublas-cu11", "nvidia-cudnn-cu11")
     except (ValueError, IndexError):
-        return "nvidia-cublas-cu12"
+        return ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
 
 
 @router.get("/gpu/info")
@@ -1060,7 +1091,7 @@ def get_gpu_info():
         gpu_name: GPU 型号
         driver_version: NVIDIA 驱动版本
         recommended_package: 推荐安装的 pip 包名
-        gpu_deps_installed: cuBLAS 依赖是否已安装
+        gpu_deps_installed: CUDA 转写依赖是否完整安装
         torch_cuda_available: PyTorch 是否检测到 CUDA
     """
     cuda_version, gpu_name = _detect_cuda_version()
@@ -1090,14 +1121,23 @@ def get_gpu_info():
     except (subprocess.SubprocessError, FileNotFoundError):
         pass
 
-    recommended_package = _get_recommended_package(cuda_version) if cuda_available else None
-    gpu_deps_installed = _detect_cublas_installed()
-    installed_package = _detect_installed_cublas_package() or _detect_cublas_dll_package()
+    recommended_packages = _get_recommended_packages(cuda_version) if cuda_available else ()
+    recommended_package = " + ".join(recommended_packages) if recommended_packages else None
+    gpu_deps_installed = _detect_gpu_runtime_installed()
+    installed_packages = [
+        package
+        for package in (
+            _detect_installed_cublas_package() or _detect_cublas_dll_package(),
+            _detect_installed_cudnn_package() or _detect_cudnn_dll_package(),
+        )
+        if package
+    ]
+    installed_package = " + ".join(installed_packages) if installed_packages else None
     package_mismatch = (
         cuda_available
         and installed_package is not None
-        and recommended_package is not None
-        and installed_package != recommended_package
+        and recommended_packages
+        and set(installed_packages) != set(recommended_packages)
     )
 
     return {
@@ -1120,23 +1160,24 @@ def get_gpu_info():
 
 @router.post("/gpu/install")
 def install_gpu_deps():
-    """后台安装 GPU 依赖（uv sync --group gpu 或 uv pip install）。
+    """后台安装 GPU 依赖（cuBLAS + cuDNN）。
 
     安装前自动检测 CUDA 版本：
-    - CUDA 12.x → uv sync --group gpu（从 pyproject.toml 安装 nvidia-cublas-cu12）
-    - CUDA 11.x → uv pip install nvidia-cublas-cu11
+    - CUDA 12.x → uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+    - CUDA 11.x → uv pip install nvidia-cublas-cu11 nvidia-cudnn-cu11
     返回 task_id，通过 /gpu/install/{task_id}/progress 轮询进度。
     """
     cuda_version, gpu_name = _detect_cuda_version()
-    package = _get_recommended_package(cuda_version)
+    packages = _get_recommended_packages(cuda_version)
+    package_label = " + ".join(packages)
 
     task_id = f"gpu_{uuid.uuid4().hex[:8]}"
     _gpu_install_tasks[task_id] = {
         "status": "starting",
         "progress": 0,
-        "message": f"准备安装 {package}...",
+        "message": f"准备安装 {package_label}...",
         "error": None,
-        "package": package,
+        "package": package_label,
         "cuda_version": cuda_version,
     }
 
@@ -1144,7 +1185,7 @@ def install_gpu_deps():
         try:
             _gpu_install_tasks[task_id]["status"] = "running"
             _gpu_install_tasks[task_id]["progress"] = 5
-            _gpu_install_tasks[task_id]["message"] = f"正在安装 {package}..."
+            _gpu_install_tasks[task_id]["message"] = f"正在安装 {package_label}..."
 
             import sys
             target_dir = gpu_python_packages_dir()
@@ -1157,9 +1198,11 @@ def install_gpu_deps():
                 "--upgrade",
                 "--target",
                 str(target_dir),
-                package,
+                *packages,
             ]
-            _gpu_install_tasks[task_id]["message"] = f"uv pip install --target {target_dir} {package}"
+            _gpu_install_tasks[task_id]["message"] = (
+                f"uv pip install --target {target_dir} {' '.join(packages)}"
+            )
 
             process = subprocess.Popen(
                 install_cmd,
@@ -1199,19 +1242,19 @@ def install_gpu_deps():
                     target = str(target_dir)
                     if target not in sys.path:
                         sys.path.insert(0, target)
-                    from app.transcriber.whisper import _setup_cuda_dlls
-                    _setup_cuda_dlls()
+                    from app.transcriber import whisper
+                    whisper._HAS_CUDA_DLLS = whisper._setup_cuda_dlls()
                 except Exception:
                     pass
 
                 _gpu_install_tasks[task_id]["status"] = "completed"
                 _gpu_install_tasks[task_id]["progress"] = 100
-                _gpu_install_tasks[task_id]["message"] = f"GPU 驱动 {package} 安装完成"
+                _gpu_install_tasks[task_id]["message"] = f"GPU 加速依赖 {package_label} 安装完成"
             else:
                 error_output = "\n".join(output_lines[-10:]) or "安装失败"
                 _gpu_install_tasks[task_id]["status"] = "failed"
                 _gpu_install_tasks[task_id]["error"] = error_output.strip()[-500:]
-                _gpu_install_tasks[task_id]["message"] = f"安装 {package} 失败"
+                _gpu_install_tasks[task_id]["message"] = f"安装 {package_label} 失败"
 
         except Exception as e:
             _gpu_install_tasks[task_id]["status"] = "failed"
@@ -1230,7 +1273,7 @@ def install_gpu_deps():
         "data": {
             "task_id": task_id,
             "status": "started",
-            "package": package,
+            "package": package_label,
         },
     }
 
@@ -1273,24 +1316,31 @@ def get_gpu_install_progress(task_id: str):
 
 @router.delete("/gpu/uninstall")
 def uninstall_gpu_deps():
-    """卸载已安装的 GPU 驱动包（nvidia-cublas-cu11 或 cu12）。
+    """卸载已安装的 GPU 加速依赖包（cuBLAS / cuDNN）。
 
     自动检测当前安装的版本并卸载。
     卸载后同时清理 ctranslate2 目录中残留的 DLL 文件。
     """
-    installed_pkg = _detect_installed_cublas_package()
-    if not installed_pkg:
+    installed_packages = [
+        package
+        for package in (
+            _detect_installed_cublas_package(),
+            _detect_installed_cudnn_package(),
+        )
+        if package
+    ]
+    if not installed_packages:
         return {
             "code": 0,
             "message": "无需卸载",
-            "data": {"uninstalled": None, "message": "未检测到已安装的 GPU 驱动包"},
+            "data": {"uninstalled": None, "message": "未检测到已安装的 GPU 加速依赖包"},
         }
 
     import sys
 
     # 1. 卸载 pip 包
     result = subprocess.run(
-        [_uv_path, "pip", "uninstall", installed_pkg],
+        [_uv_path, "pip", "uninstall", *installed_packages],
         capture_output=True, text=True,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
@@ -1299,8 +1349,16 @@ def uninstall_gpu_deps():
     try:
         import ctranslate2 as _ct2
         _ct2_dir = Path(_ct2.__file__).parent
-        for dll in ("cublas64_12.dll", "cublasLt64_12.dll",
-                     "cublas64_11.dll", "cublasLt64_11.dll"):
+        for dll in (
+            "cublas64_12.dll",
+            "cublasLt64_12.dll",
+            "cublas64_11.dll",
+            "cublasLt64_11.dll",
+            "cudnn64_9.dll",
+            "cudnn_ops64_9.dll",
+            "cudnn64_8.dll",
+            "cudnn_ops_infer64_8.dll",
+        ):
             dll_path = _ct2_dir / dll
             if dll_path.exists():
                 dll_path.unlink()
@@ -1320,8 +1378,8 @@ def uninstall_gpu_deps():
         "code": 0 if success else 1,
         "message": "卸载成功" if success else "卸载失败",
         "data": {
-            "uninstalled": installed_pkg,
+            "uninstalled": installed_packages,
             "success": success,
-            "message": f"已卸载 {installed_pkg}" if success else result.stderr[-200:],
+            "message": f"已卸载 {' + '.join(installed_packages)}" if success else result.stderr[-200:],
         },
     }

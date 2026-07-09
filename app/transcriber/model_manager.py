@@ -43,6 +43,12 @@ _MODEL_ESTIMATED_SIZE_MB: dict[str, int] = {
 }
 
 _MODEL_WEIGHT_SUFFIXES = (".bin", ".safetensors")
+_REQUIRED_MODEL_FILES = (
+    "config.json",
+    "preprocessor_config.json",
+    "model.bin",
+    "tokenizer.json",
+)
 
 # ── 所有已知的模型大小 ──
 _ALL_MODEL_SIZES: list[str] = ["tiny", "base", "small", "medium", "large-v3", "turbo"]
@@ -167,6 +173,73 @@ def _cache_entry(
         "partial_size_bytes": cache_size if partial else None,
         "cache_path": str(repo_path),
     }
+
+
+def _is_complete_model_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    if not all((path / filename).is_file() for filename in _REQUIRED_MODEL_FILES):
+        return False
+    return any(item.is_file() for item in path.glob("vocabulary.*"))
+
+
+def _resolve_snapshot_dir(repo_path: Path) -> Path | None:
+    refs_main = repo_path / "refs" / "main"
+    if refs_main.is_file():
+        try:
+            revision = refs_main.read_text(encoding="utf-8").strip()
+        except OSError:
+            revision = ""
+        if revision:
+            snapshot_path = repo_path / "snapshots" / revision
+            if _is_complete_model_dir(snapshot_path):
+                return snapshot_path
+
+    snapshots_dir = repo_path / "snapshots"
+    if snapshots_dir.is_dir():
+        snapshots = sorted(
+            (item for item in snapshots_dir.iterdir() if item.is_dir()),
+            key=lambda item: item.stat().st_mtime if item.exists() else 0,
+            reverse=True,
+        )
+        for snapshot_path in snapshots:
+            if _is_complete_model_dir(snapshot_path):
+                return snapshot_path
+
+    if _is_complete_model_dir(repo_path):
+        return repo_path
+
+    return None
+
+
+def resolve_whisper_model_path(model_size: str) -> str | None:
+    """Return a complete local snapshot path for a cached faster-whisper model.
+
+    Desktop runs set HF_HOME to the app data directory, while users may already
+    have models in the default HuggingFace cache. Passing this path directly to
+    faster-whisper avoids an unnecessary online repo lookup before transcription.
+    """
+    if model_size not in _MODEL_REPO_MAP:
+        return None
+
+    cache_info = scan_whisper_cache().get(model_size, {})
+    cache_path_value = cache_info.get("cache_path")
+    candidate_paths: list[Path] = []
+    if cache_path_value:
+        candidate_paths.append(Path(str(cache_path_value)))
+
+    repo_id = _MODEL_REPO_MAP[model_size]
+    candidate_paths.extend(
+        _repo_cache_dir(repo_id, hub_cache)
+        for hub_cache in _get_hf_hub_caches()
+    )
+
+    for repo_path in _dedupe_paths(candidate_paths):
+        snapshot_path = _resolve_snapshot_dir(repo_path)
+        if snapshot_path:
+            return str(snapshot_path)
+
+    return None
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:

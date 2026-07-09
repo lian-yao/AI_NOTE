@@ -12,7 +12,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from app.schemas.stage import StageResult
-from app.transcriber.cuda_runtime import ensure_cuda_dlls_available
+from app.transcriber.cuda_runtime import (
+    activate_ctranslate2_dll_dirs,
+    ensure_cuda_dlls_available,
+)
 
 warnings.filterwarnings(
     "ignore",
@@ -22,12 +25,13 @@ warnings.filterwarnings(
 
 
 def _setup_cuda_dlls() -> bool:
-    """确保 cuBLAS DLL 可被 ctranslate2 加载。
+    """确保 CUDA/cuDNN DLL 可被 ctranslate2 加载。
 
-    自动发现 nvidia-cublas-cu12 / cu11、用户 Python、AppData 或 PATH
+    自动发现 nvidia-cublas / nvidia-cudnn、用户 Python、AppData 或 PATH
     中的 DLL 目录，并加入 Windows DLL 搜索路径。
-    返回 True 表示 CUDA DLL 已就绪。
+    返回 True 表示 CUDA 转写运行库已完整就绪。
     """
+    activate_ctranslate2_dll_dirs()
     return ensure_cuda_dlls_available()
 
 
@@ -103,18 +107,23 @@ class FasterWhisperTranscriber:
         """延迟加载模型（首次使用时加载）。"""
         if self._model is not None:
             return
+        activate_ctranslate2_dll_dirs()
         try:
             from faster_whisper import WhisperModel
         except ImportError:
             raise RuntimeError(
                 "faster-whisper 未安装。请运行: pip install faster-whisper"
             )
+        from app.transcriber.model_manager import resolve_whisper_model_path
 
         logger = __import__("loguru").logger
+        model_size_or_path = resolve_whisper_model_path(self.model_size) or self.model_size
+        if model_size_or_path != self.model_size:
+            logger.info(f"Whisper 使用本地模型缓存: {self.model_size} -> {model_size_or_path}")
 
         # 确定尝试的设备列表，CUDA 不可用时自动降级 CPU
         if self.device == "auto":
-            # auto: 检测 CUDA，有则用 GPU，无则用 CPU
+            # auto: 只有 CUDA/cuDNN runtime 完整时才尝试 GPU，避免原生 DLL 缺失导致进程崩溃。
             _try_cuda = _HAS_CUDA_DLLS
             try:
                 import torch
@@ -125,11 +134,11 @@ class FasterWhisperTranscriber:
         elif self.device == "cuda":
             if not _HAS_CUDA_DLLS:
                 logger.warning(
-                    "CUDA 设备已配置但未找到 cuBLAS 库。"
-                    "请在设置页 → 本地转写 → GPU 加速中点击安装 GPU 驱动。"
-                    "当前将尝试 CUDA，如失败则降级到 CPU。"
+                    "CUDA 设备已配置但 GPU 加速依赖不完整（需要 cuBLAS + cuDNN）。"
+                    "请在设置页 → 本地转写 → GPU 加速中安装完整依赖。"
+                    "当前为避免后端崩溃，已改用 CPU。"
                 )
-                devices_to_try = ["cuda", "cpu"]
+                devices_to_try = ["cpu"]
             else:
                 devices_to_try = ["cuda"]
         else:
@@ -140,7 +149,7 @@ class FasterWhisperTranscriber:
             try:
                 dev_ct = self._resolve_compute_type(dev, self.compute_type)
                 self._model = WhisperModel(
-                    self.model_size,
+                    model_size_or_path,
                     device=dev,
                     compute_type=dev_ct,
                 )
@@ -162,7 +171,7 @@ class FasterWhisperTranscriber:
 
         _hint = ""
         if not _HAS_CUDA_DLLS and self.device in ("cuda", "auto"):
-            _hint = "。提示: pip install nvidia-cublas-cu12 可安装缺失的 CUDA 库"
+            _hint = "。提示: 安装 nvidia-cublas-cu12 和 nvidia-cudnn-cu12 可启用 CUDA 转写"
         raise RuntimeError(f"无法加载 Whisper 模型: {last_error}{_hint}")
 
     async def transcribe(

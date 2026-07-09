@@ -9,6 +9,11 @@ CUDA_DLL_SETS: tuple[tuple[str, tuple[str, str]], ...] = (
     ("nvidia-cublas-cu11", ("cublas64_11.dll", "cublasLt64_11.dll")),
 )
 
+CUDNN_DLL_SETS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("nvidia-cudnn-cu12", ("cudnn64_9.dll", "cudnn_ops64_9.dll")),
+    ("nvidia-cudnn-cu11", ("cudnn64_8.dll", "cudnn_ops_infer64_8.dll")),
+)
+
 _DLL_DIRECTORY_HANDLES: list[object] = []
 _ACTIVATED_DLL_DIRS: set[str] = set()
 
@@ -97,6 +102,7 @@ def iter_cuda_dll_dirs() -> list[Path]:
         candidates.extend(
             [
                 site_dir / "nvidia" / "cublas" / "bin",
+                site_dir / "nvidia" / "cudnn" / "bin",
                 site_dir / "ctranslate2",
             ]
         )
@@ -125,12 +131,48 @@ def iter_cuda_dll_dirs() -> list[Path]:
                 [
                     root,
                     root / "nvidia" / "cublas" / "bin",
+                    root / "nvidia" / "cudnn" / "bin",
                     root / "_internal" / "nvidia" / "cublas" / "bin",
+                    root / "_internal" / "nvidia" / "cudnn" / "bin",
                     root / "ctranslate2",
                 ]
             )
 
     return [path for path in _dedupe_paths(candidates) if path.exists()]
+
+
+def iter_ctranslate2_dll_dirs() -> list[Path]:
+    candidates: list[Path] = []
+
+    for site_dir in iter_python_site_package_dirs():
+        candidates.append(site_dir / "ctranslate2")
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            root = Path(meipass)
+            candidates.extend(
+                [
+                    root / "ctranslate2",
+                    root / "_internal" / "ctranslate2",
+                ]
+            )
+        try:
+            exe_dir = Path(sys.executable).resolve().parent
+            candidates.extend(
+                [
+                    exe_dir / "ctranslate2",
+                    exe_dir / "_internal" / "ctranslate2",
+                ]
+            )
+        except Exception:
+            pass
+
+    return [
+        path
+        for path in _dedupe_paths(candidates)
+        if (path / "ctranslate2.dll").exists()
+    ]
 
 
 def cublas_package_from_dir(path: Path) -> str | None:
@@ -140,9 +182,24 @@ def cublas_package_from_dir(path: Path) -> str | None:
     return None
 
 
+def cudnn_package_from_dir(path: Path) -> str | None:
+    for package, dlls in CUDNN_DLL_SETS:
+        if all((path / dll).exists() for dll in dlls):
+            return package
+    return None
+
+
 def detect_cublas_dll_package() -> str | None:
     for path in iter_cuda_dll_dirs():
         package = cublas_package_from_dir(path)
+        if package:
+            return package
+    return None
+
+
+def detect_cudnn_dll_package() -> str | None:
+    for path in iter_cuda_dll_dirs():
+        package = cudnn_package_from_dir(path)
         if package:
             return package
     return None
@@ -169,9 +226,23 @@ def activate_cuda_dll_dir(path: Path) -> None:
         os.environ["PATH"] = key + (os.pathsep + current_path if current_path else "")
 
 
+def activate_ctranslate2_dll_dirs() -> None:
+    if sys.platform != "win32":
+        return
+    for dll_dir in iter_ctranslate2_dll_dirs():
+        activate_cuda_dll_dir(dll_dir)
+
+
 def ensure_cuda_dlls_available() -> bool:
     if sys.platform != "win32":
         return True
+
+    activate_ctranslate2_dll_dirs()
+
+    candidate_dirs = iter_cuda_dll_dirs()
+    for dll_dir in candidate_dirs:
+        if cublas_package_from_dir(dll_dir) or cudnn_package_from_dir(dll_dir):
+            activate_cuda_dll_dir(dll_dir)
 
     try:
         import ctranslate2 as ct2
@@ -180,13 +251,16 @@ def ensure_cuda_dlls_available() -> bool:
     except Exception:
         return False
 
-    if cublas_package_from_dir(ct2_dir):
-        activate_cuda_dll_dir(ct2_dir)
-        return True
+    runtime_dirs: list[Path] = [ct2_dir, *candidate_dirs]
+    has_cublas = False
+    has_cudnn = False
 
-    for dll_dir in iter_cuda_dll_dirs():
+    for dll_dir in runtime_dirs:
         if cublas_package_from_dir(dll_dir):
             activate_cuda_dll_dir(dll_dir)
-            return True
+            has_cublas = True
+        if cudnn_package_from_dir(dll_dir):
+            activate_cuda_dll_dir(dll_dir)
+            has_cudnn = True
 
-    return False
+    return has_cublas and has_cudnn

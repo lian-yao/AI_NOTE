@@ -3059,7 +3059,7 @@ function TranscriberSection() {
                             className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary/80"
                           >
                             <Download size={14} />
-                            安装 GPU 加速依赖（{gpuInfo?.recommended_package || 'nvidia-cublas-cu12'}）
+                            安装 GPU 加速依赖（{gpuInfo?.recommended_package || 'nvidia-cublas-cu12 + nvidia-cudnn-cu12'}）
                           </button>
                         )}
                       </div>
@@ -3203,7 +3203,7 @@ function MonitorSection() {
           title="CUDA"
           value={
             gpuInfo?.cuda_available
-              ? `${gpuInfo.gpu_name || 'NVIDIA GPU'} | CUDA ${gpuInfo.cuda_version || '?'} | cuBLAS ${gpuInfo.gpu_deps_installed ? '✓' : '✗'}`
+              ? `${gpuInfo.gpu_name || 'NVIDIA GPU'} | CUDA ${gpuInfo.cuda_version || '?'} | GPU Runtime ${gpuInfo.gpu_deps_installed ? '✓' : '✗'}`
               : status?.cuda.available
                 ? status.cuda.gpu_name || '已启用'
                 : '未启用'
