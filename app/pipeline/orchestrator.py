@@ -656,15 +656,15 @@ class PipelineOrchestrator:
                     self._sync_progress(task, stage, 30 + int(pct * 0.7))
 
                 _tc = self.transcriber
-            if hasattr(_tc, 'model_size'):
-                logger.info(f"transcriber: {_tc.__class__.__name__} model={_tc.model_size} device={_tc.device}")
-            elif hasattr(_tc, 'local') and hasattr(_tc.local, 'model_size'):
-                logger.info(f"transcriber: {_tc.__class__.__name__}({_tc.local.__class__.__name__}) model={_tc.local.model_size} device={_tc.local.device}")
-            else:
-                logger.info(f"transcriber: {_tc.__class__.__name__}")
-            transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
-            if not transcribe_result.success:
-                raise RuntimeError(transcribe_result.error or "语音转写失败，未返回错误详情")
+                if hasattr(_tc, 'model_size'):
+                    logger.info(f"transcriber: {_tc.__class__.__name__} model={_tc.model_size} device={_tc.device}")
+                elif hasattr(_tc, 'local') and hasattr(_tc.local, 'model_size'):
+                    logger.info(f"transcriber: {_tc.__class__.__name__}({_tc.local.__class__.__name__}) model={_tc.local.model_size} device={_tc.local.device}")
+                else:
+                    logger.info(f"transcriber: {_tc.__class__.__name__}")
+                transcribe_result = await self.transcriber.transcribe(audio_path, video_dir, on_transcribe_progress)
+                if not transcribe_result.success:
+                    raise RuntimeError(transcribe_result.error or "语音转写失败，未返回错误详情")
 
             # 保存转写结果到 task.options，供 GENERATE 阶段使用
             full_text = transcribe_result.metadata.get("full_text", "")
