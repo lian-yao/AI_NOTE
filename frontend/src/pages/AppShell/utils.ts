@@ -1,7 +1,7 @@
 import type { Markdown, Segment, Task } from '@/store/taskStore'
 import { getApiBaseURL } from '@/utils/api'
 
-export type ShellView = 'generate' | 'summary' | 'library' | 'settings'
+export type ShellView = 'generate' | 'summary' | 'library' | 'settings' | 'qa'
 
 export interface TimelineSection {
   key: string

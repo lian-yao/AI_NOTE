@@ -1,4 +1,4 @@
-import { LayoutDashboard, Library, PlusCircle, Settings } from 'lucide-react'
+import { LayoutDashboard, Library, MessageCircle, PlusCircle, Settings } from 'lucide-react'
 import type { ComponentType } from 'react'
 import type { ShellView } from './utils'
 
@@ -12,6 +12,7 @@ const items: { view: ShellView; label: string; icon: ComponentType<{ size?: numb
   { view: 'generate', label: '新建', icon: PlusCircle },
   { view: 'summary', label: '工作区', icon: LayoutDashboard },
   { view: 'library', label: '知识库', icon: Library },
+  { view: 'qa', label: '全局问答', icon: MessageCircle },
 ]
 
 function SidebarTooltip({ label }: { label: string }) {

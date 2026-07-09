@@ -59,6 +59,33 @@ class QAEngine:
                 result.append(c)
         return result[:top_k]
 
+    async def _compress_history(self, history, max_rounds: int = 8, keep_recent: int = 4) -> list:
+        """对话历史超过阈值时，压缩早期部分为摘要，保留最近 N 轮。"""
+        if not history or len(history) <= max_rounds * 2:
+            return history
+
+        keep_count = keep_recent * 2
+        early = history[:-keep_count]
+        recent = history[-keep_count:]
+
+        early_text = ""
+        for msg in early:
+            role = "用户" if msg.get("role") == "user" else "AI"
+            text = (msg.get("content") or "").strip()
+            if text:
+                early_text += f"{role}：{text}\n"
+
+        try:
+            summary = await self.llm.chat([
+                {"role": "system", "content": "你是一个对话摘要助手。将以下对话内容压缩为一段简洁的摘要，保留关键问答脉络。"},
+                {"role": "user", "content": f"请压缩以下对话：\\n{early_text}"},
+            ], temperature=0.1)
+            logger.info(f"compress_history: {len(history)//2} rounds -> summary + {keep_recent} rounds")
+            return [{"role": "system", "content": f"对话历史摘要：{summary.strip()}"}, *recent]
+        except Exception as e:
+            logger.warning(f"compress_history 失败，使用原始历史: {e}")
+            return history
+
     async def ask(
         self,
         query: str,
@@ -128,11 +155,12 @@ class QAEngine:
 
 请基于参考资料回答上述问题。"""
 
+        compressed = await self._compress_history(history or [])
         history_messages = []
-        for item in (history or [])[-8:]:
+        for item in compressed:
             role = item.get("role")
             content = item.get("content")
-            if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+            if role in {"user", "assistant", "system"} and isinstance(content, str) and content.strip():
                 history_messages.append({"role": role, "content": content})
 
         messages = [

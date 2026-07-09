@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { isMockBackend, isMockLikeTask, useTaskStore } from '@/store/taskStore'
 import GenerateView from './GenerateView'
+import GlobalQA from './GlobalQA'
 import ShellSidebar from './ShellSidebar'
 import type { ShellView } from './utils'
 
@@ -222,6 +223,11 @@ export default function AppShell({
                 onNewTask={() => setCurrentView('generate')}
               />
             </Suspense>
+          </div>
+        )}
+        {currentView === 'qa' && (
+          <div className='absolute inset-0 z-10 flex flex-col'>
+            <GlobalQA />
           </div>
         )}
       </main>

@@ -255,7 +255,7 @@ export default function ChatPanel({
       setInput('')
       setLoading(true)
       setStreamingAssistant({ content: '', sources: [] })
-      const history = messages.map(m => ({ role: m.role, content: m.content }))
+      const history = messages.slice(-20).map(m => ({ role: m.role, content: m.content }))
 
       try {
         let answer = ''
