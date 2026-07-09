@@ -47,6 +47,7 @@ import {
 } from '@/services/model'
 import {
   getDownloaderCookie,
+  importDownloaderCookieFromBrowser,
   pollBilibiliQrCodeLogin,
   startBilibiliQrCodeLogin,
   updateDownloaderCookie,
@@ -1562,6 +1563,7 @@ function DownloaderSection() {
   const [qrSession, setQrSession] = useState<BilibiliQrCodeSession | null>(null)
   const [qrStatus, setQrStatus] = useState<BilibiliQrCodePollResult | null>(null)
   const [cookieValidation, setCookieValidation] = useState<DownloaderCookieValidation | null>(null)
+  const [cookieImporting, setCookieImporting] = useState(false)
   const [proxy, setProxy] = useState<ProxyConfig | null>(null)
   const [proxyDraft, setProxyDraft] = useState({ enabled: false, url: '' })
   const [platformLoadFailed, setPlatformLoadFailed] = useState(false)
@@ -1673,6 +1675,27 @@ function DownloaderSection() {
     }
   }
 
+  const importFromBrowser = async () => {
+    setCookieImporting(true)
+    try {
+      const result = await importDownloaderCookieFromBrowser(
+        { platform: 'bilibili' },
+        { silent: true },
+      )
+      if (result.valid && result.cookie) {
+        setCookie(result.cookie)
+        setCookieValidation(result)
+        toast.success(result.saved ? '已从浏览器同步并保存 Cookie' : '已从浏览器读取 Cookie')
+      } else {
+        toast.error(result.message || '未在浏览器中找到有效的 Bilibili Cookie')
+      }
+    } catch {
+      // 拦截器已提示
+    } finally {
+      setCookieImporting(false)
+    }
+  }
+
   const startQrLogin = async () => {
     setQrStarting(true)
     try {
@@ -1752,6 +1775,15 @@ function DownloaderSection() {
                     保存
                   </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={importFromBrowser}
+                  disabled={cookieImporting}
+                  className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-800 px-3 text-xs font-medium text-neutral-200 transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cookieImporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  从浏览器导入
+                </button>
                 <button
                   type="button"
                   onClick={startQrLogin}

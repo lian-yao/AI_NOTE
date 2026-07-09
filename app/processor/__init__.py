@@ -54,6 +54,17 @@ def _cookie_string_to_netscape(cookie_str: str, domain: str = ".bilibili.com") -
     return "\n".join(lines) + "\n"
 
 
+# B站 API 要求的 HTTP 请求头，缺了会被 CDN/WAF 返回 412
+_BILIBILI_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    ),
+    "Referer": "https://www.bilibili.com/",
+    "Origin": "https://www.bilibili.com",
+}
+
+
 def build_cookie_opts() -> dict:
     """根据全局配置构建 yt-dlp 的 cookie 相关参数。
 
@@ -68,6 +79,7 @@ def build_cookie_opts() -> dict:
         dict: 可合并到 yt-dlp opts。
               _browser_cache  → browser 模式首次提取后需缓存
               _temp_cookie    → string 模式的临时文件，用完需删除
+              http_headers    → B站要求的 UA/Referer，避免 412
     """
     import os
     import tempfile
@@ -91,7 +103,11 @@ def build_cookie_opts() -> dict:
             )
             tmp.write(netscape)
             tmp.close()
-            return {"cookiefile": tmp.name, "_temp_cookie": True}
+            return {
+                "cookiefile": tmp.name,
+                "_temp_cookie": True,
+                "http_headers": _BILIBILI_HTTP_HEADERS,
+            }
 
     # ── source: string ──────────────────────────────────────────────
     if source == "string":
@@ -104,12 +120,14 @@ def build_cookie_opts() -> dict:
             cookie_path = os.path.join(project_root(), _cookie) if not os.path.isabs(_cookie) else _cookie
             if os.path.isfile(cookie_path):
                 # 已有缓存 → 直接用文件
-                return {"cookiefile": cookie_path}
+                return {"cookiefile": cookie_path, "http_headers": _BILIBILI_HTTP_HEADERS}
         # 无缓存 → 从浏览器提取，并标记需要缓存
         browser = settings.bilibili_cookie_browser or "chrome"
+        default_cache = os.path.join(str(project_root()), "data", "cookies.txt")
         return {
             "cookiesfrombrowser": (browser,),
-            "_browser_cache": _cookie or "data/cookies.txt",
+            "_browser_cache": _cookie or default_cache,
+            "http_headers": _BILIBILI_HTTP_HEADERS,
         }
 
     # ── source: file ────────────────────────────────────────────────
@@ -118,7 +136,7 @@ def build_cookie_opts() -> dict:
         if _cookie:
             cookie_path = os.path.join(project_root(), _cookie) if not os.path.isabs(_cookie) else _cookie
             if os.path.isfile(cookie_path):
-                return {"cookiefile": cookie_path}
+                return {"cookiefile": cookie_path, "http_headers": _BILIBILI_HTTP_HEADERS}
 
     # source == "none" 或文件不存在
     return {}
@@ -138,11 +156,16 @@ def without_browser_cookie_opts(opts: dict) -> dict:
     return clean
 
 
+_ANSI_PATTERN = __import__("re").compile(r"\x1b\[[0-9;]*m")
+
+
 def format_ytdlp_error(exc: BaseException) -> str:
     """把 yt-dlp 的异常压成适合返回给前端的短消息。"""
     message = str(exc).strip()
     if not message:
         message = type(exc).__name__
+    # 去除 ANSI 转义序列（如 [0;31m）
+    message = _ANSI_PATTERN.sub("", message)
     message = message.replace("ERROR: ERROR:", "ERROR:").replace("ERROR:", "").strip()
     return message[:300]
 

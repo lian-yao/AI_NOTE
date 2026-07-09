@@ -8,9 +8,11 @@ import json
 import os
 from pathlib import Path
 
+from app.core.paths import project_root
+
 
 # 持久化文件（data/platform_cookies.json，data/ 已在 .gitignore）
-_PERSIST_FILE = os.path.join("data", "platform_cookies.json")
+_PERSIST_FILE = os.path.join(str(project_root()), "data", "platform_cookies.json")
 
 # 内存缓存
 _cache: dict[str, str] | None = None
