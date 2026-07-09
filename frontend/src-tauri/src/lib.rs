@@ -5,7 +5,7 @@ use std::env;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use serde::Serialize;
@@ -38,7 +38,7 @@ pub fn run() {
             // 安装路径诊断：PyInstaller sidecar 在含非 ASCII / 空格的路径下经常炸（README 已警告但缺主动防御）
             // 命中时把诊断信息 emit 给前端，由顶端横幅展示，不阻断启动
             let diag = analyze_install_path(&exe_path);
-            if diag.path_has_non_ascii || diag.path_has_space || !diag.parent_writable {
+            if diag.path_has_non_ascii || diag.path_has_space {
                 let app_handle = app.handle().clone();
                 // 等前端首屏挂载好 listener；setup 阶段 window 已存在但 React 还没 render
                 // 用独立线程 + 标准 sleep，不引入 tokio 依赖
@@ -273,10 +273,13 @@ async fn test_ffmpeg_access() -> Result<String, String> {
 // 第一次启动 + restart_backend_sidecar 都走这里，保持单一启动路径。
 fn spawn_backend_sidecar(app_handle: &tauri::AppHandle) -> Result<CommandChild, String> {
     let exe_path = env::current_exe().map_err(|e| format!("无法获取可执行文件路径: {}", e))?;
-    let sidecar_dir = exe_path
+    let install_dir = exe_path
         .parent()
         .ok_or("无法获取可执行文件父目录")?
         .to_path_buf();
+    let backend_runtime_dir = prepare_backend_runtime_dir(app_handle)?;
+    let backend_data_dir = backend_runtime_dir.join("data");
+    let hf_home_dir = backend_data_dir.join("models").join("huggingface");
 
     // 收集所有系统环境变量并增强 PATH（含 ffmpeg 常见安装位置）
     let mut all_env_vars = HashMap::new();
@@ -290,6 +293,17 @@ fn spawn_backend_sidecar(app_handle: &tauri::AppHandle) -> Result<CommandChild, 
     all_env_vars
         .entry("BACKEND_PORT".to_string())
         .or_insert_with(|| BACKEND_DEFAULT_PORT.to_string());
+    all_env_vars.insert(
+        "VN_APP_DATA_DIR".to_string(),
+        path_to_env_value(&backend_data_dir),
+    );
+    all_env_vars
+        .entry("HF_HOME".to_string())
+        .or_insert_with(|| path_to_env_value(&hf_home_dir));
+    all_env_vars.insert(
+        "AI_VIDEO_INSTALL_DIR".to_string(),
+        path_to_env_value(&install_dir),
+    );
 
     let mut sidecar_command = app_handle
         .shell()
@@ -300,7 +314,7 @@ fn spawn_backend_sidecar(app_handle: &tauri::AppHandle) -> Result<CommandChild, 
     }
 
     let (mut rx, child) = sidecar_command
-        .current_dir(sidecar_dir)
+        .current_dir(backend_runtime_dir)
         .spawn()
         .map_err(|e| format!("spawn sidecar 失败: {}", e))?;
 
@@ -340,6 +354,31 @@ fn spawn_backend_sidecar(app_handle: &tauri::AppHandle) -> Result<CommandChild, 
     });
 
     Ok(child)
+}
+
+fn prepare_backend_runtime_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
+    let backend_runtime_dir = app_data_dir.join("backend");
+    let backend_data_dir = backend_runtime_dir.join("data");
+    let dirs = vec![
+        backend_runtime_dir.clone(),
+        backend_data_dir.clone(),
+        backend_data_dir.join("chromadb"),
+        backend_data_dir.join("logs"),
+        backend_data_dir.join("models").join("huggingface"),
+    ];
+    for dir in dirs {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("创建后端数据目录失败 {}: {}", dir.display(), e))?;
+    }
+    Ok(backend_runtime_dir)
+}
+
+fn path_to_env_value(path: &Path) -> String {
+    path.to_string_lossy().to_string()
 }
 
 // 重启 sidecar：杀旧 child，spawn 新 child，回写到 state。
@@ -453,8 +492,8 @@ fn probe_sys_check(addr: &SocketAddr) -> bool {
     head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200")
 }
 
-// 安装路径诊断：PyInstaller 在含非 ASCII / 空格的路径下加载 _internal/* 经常炸；
-// 父目录不可写时模型 / 配置 / 日志也无法落盘
+// 安装路径诊断：PyInstaller sidecar 在含非 ASCII / 空格的路径下偶尔会遇到加载问题。
+// 后端数据已写入 AppData，不再依赖安装目录可写；parent_writable 仅保留给诊断面板展示。
 #[derive(Serialize, Clone)]
 struct InstallPathDiagnostics {
     exe_path: String,

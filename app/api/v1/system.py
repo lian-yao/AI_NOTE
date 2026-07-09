@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.core.database import get_db
-from app.core.config import settings
+from app.core.config import settings, storage_config_file
 from app.core.paths import project_root
 from app.core.model_usage import (
     load_model_usage_config,
@@ -112,7 +112,7 @@ def get_system_config():
 
 _runtime_config: dict = {}
 
-_STORAGE_CONFIG_PATH = project_root() / "data" / "storage_config.json"
+_STORAGE_CONFIG_PATH = storage_config_file()
 _CACHE_DIRECTORY_CHILDREN = {
     "downloads": "downloads",
     "transcripts": "transcripts",
