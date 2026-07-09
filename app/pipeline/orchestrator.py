@@ -395,10 +395,46 @@ class PipelineOrchestrator:
                 return StageResult(success=False, error=f"复制文件失败: {exc}")
 
         title = src_path.stem
+
+        # 提取视频时长
+        from app.processor.audio import _probe_duration_sync
+        import subprocess
+        duration_seconds = None
+        try:
+            dur = _probe_duration_sync(str(dest_path))
+            if dur > 0:
+                duration_seconds = int(dur)
+        except Exception:
+            pass
+
+        # 为视频文件生成封面图
+        cover_url = ""
+        if not is_audio:
+            cover_path = video_dir / "cover.jpg"
+            if not cover_path.exists():
+                try:
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-nostdin", "-ss", "1",
+                            "-i", str(dest_path), "-frames:v", "1",
+                            "-q:v", "3", str(cover_path),
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        check=False,
+                    )
+                except Exception:
+                    pass
+            if cover_path.exists() and cover_path.stat().st_size > 0:
+                cover_url = f"/api/v1/videos/{video_id}/cover"
+
         meta = {
             "video_id": video_id, "url": source_url, "title": title,
             "uploader": "本地上传", "uploader_uid": "",
-            "duration_seconds": None, "cover_url": "",
+            "duration_seconds": duration_seconds, "cover_url": cover_url,
             "description": f"本地{'音频' if is_audio else '视频'}文件: {filename}",
             "bvid": None, "avid": None, "platform": "local",
             "local_source_path": str(dest_path), "file_size": file_size,
@@ -411,7 +447,8 @@ class PipelineOrchestrator:
             metadata={
                 "video_id": video_id, "title": title, "uploader": "本地上传",
                 "uploader_uid": "", "description": meta["description"],
-                "duration_seconds": None, "cover_url": "", "bvid": None, "avid": None,
+                "duration_seconds": duration_seconds, "cover_url": cover_url,
+                "bvid": None, "avid": None,
                 "platform": "local", "local_file_path": str(dest_path), "file_size": file_size,
             },
         )

@@ -709,6 +709,29 @@ async def get_video_snapshot(
     return FileResponse(output_path, media_type="image/jpeg")
 
 
+@router.get("/{video_id}/cover")
+async def get_video_cover(
+    video_id: str,
+    db: Session = Depends(get_db),
+):
+    """返回本地视频的封面图，不存在时即时生成。"""
+    video = _find_video_for_player(db, video_id, None)
+    video_path = _resolve_local_video_path(video)
+    if not video_path:
+        raise HTTPException(status_code=404, detail="本地视频文件不存在，无法生成封面")
+
+    cover_path = video_path.parent / "cover.jpg"
+    if not cover_path.exists():
+        try:
+            await asyncio.to_thread(_generate_snapshot_sync, video_path, cover_path, 1)
+        except FileNotFoundError:
+            raise HTTPException(status_code=503, detail="ffmpeg 未安装或不在 PATH 中")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"生成封面失败: {exc}")
+
+    return FileResponse(cover_path, media_type="image/jpeg")
+
+
 @router.get("/")
 def list_videos(
     page: int = Query(1, ge=1),
