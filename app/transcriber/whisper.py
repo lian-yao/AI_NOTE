@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import warnings
 from collections.abc import Callable
 from pathlib import Path
 
 from app.schemas.stage import StageResult
+from app.transcriber.cuda_runtime import ensure_cuda_dlls_available
 
 warnings.filterwarnings(
     "ignore",
@@ -24,80 +24,11 @@ warnings.filterwarnings(
 def _setup_cuda_dlls() -> bool:
     """确保 cuBLAS DLL 可被 ctranslate2 加载。
 
-    自动发现 nvidia-cublas-cu12 或 nvidia-cublas-cu11 pip 包的 bin 目录，
-    将必要的 DLL 复制到 ctranslate2 包目录下（同级加载策略）。
+    自动发现 nvidia-cublas-cu12 / cu11、用户 Python、AppData 或 PATH
+    中的 DLL 目录，并加入 Windows DLL 搜索路径。
     返回 True 表示 CUDA DLL 已就绪。
     """
-    if sys.platform != "win32":
-        return True
-
-    # 支持 CUDA 12.x 和 CUDA 11.x 两套 DLL
-    _DLL_VERSIONS = (
-        ("cublas64_12.dll", "cublasLt64_12.dll"),   # CUDA 12.x
-        ("cublas64_11.dll", "cublasLt64_11.dll"),   # CUDA 11.x
-    )
-
-    try:
-        import ctranslate2 as _ct2
-        _ct2_dir = Path(_ct2.__file__).parent
-    except Exception:
-        return False
-
-    # 检查是否已有任一版本的 DLL 可用
-    for _dll_set in _DLL_VERSIONS:
-        if all((_ct2_dir / d).exists() for d in _dll_set):
-            return True
-
-    # 尝试发现 nvidia-cublas-cuXX 的 bin 目录
-    _cublas_bin = None
-    _found_version = None
-
-    # 先尝试 nvidia.cublas 包 (cu12)
-    for _pkg_name in ("nvidia.cublas",):
-        try:
-            _mod = __import__(_pkg_name, fromlist=["__path__"])
-            _bin = Path(_mod.__path__[0]) / "bin"
-            for _dll_set in _DLL_VERSIONS:
-                if (_bin / _dll_set[0]).exists():
-                    _cublas_bin = _bin
-                    _found_version = _dll_set
-                    break
-            if _cublas_bin:
-                break
-        except ImportError:
-            pass
-
-    # 回退：扫描 sys.path 中可能的 site-packages 目录
-    if _cublas_bin is None:
-        for _site in sys.path:
-            _site_path = Path(_site)
-            for _nvidia_pkg in ("nvidia",):
-                _pkg_dir = _site_path / _nvidia_pkg / "cublas" / "bin"
-                if _pkg_dir.exists():
-                    for _dll_set in _DLL_VERSIONS:
-                        if (_pkg_dir / _dll_set[0]).exists():
-                            _cublas_bin = _pkg_dir
-                            _found_version = _dll_set
-                            break
-                    if _cublas_bin:
-                        break
-            if _cublas_bin:
-                break
-
-    if _cublas_bin is None:
-        return False
-
-    # 复制 DLL 到 ctranslate2 目录
-    import shutil
-    for _dll in _found_version:
-        _src = _cublas_bin / _dll
-        if _src.exists() and not (_ct2_dir / _dll).exists():
-            try:
-                shutil.copy2(str(_src), str(_ct2_dir / _dll))
-            except Exception:
-                return False
-
-    return all((_ct2_dir / d).exists() for d in _found_version)
+    return ensure_cuda_dlls_available()
 
 
 _HAS_CUDA_DLLS = _setup_cuda_dlls()

@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 import time
 import shutil
+import os
 from pathlib import Path
 from typing import Any
 
@@ -64,9 +65,56 @@ _downloads: dict[str, DownloadStatus] = {}
 
 def _get_hf_hub_cache() -> Path:
     """获取 HuggingFace Hub 缓存目录。"""
-    import os
+    hub_cache = (
+        os.environ.get("HF_HUB_CACHE")
+        or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    )
+    if hub_cache:
+        return Path(hub_cache).expanduser()
     hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-    return Path(hf_home) / "hub"
+    return Path(hf_home).expanduser() / "hub"
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            key = str(path.expanduser().resolve())
+        except OSError:
+            key = str(path.expanduser())
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path.expanduser())
+    return result
+
+
+def _get_hf_hub_caches() -> list[Path]:
+    """Return all HuggingFace hub cache roots worth scanning.
+
+    The desktop app sets HF_HOME to its AppData runtime directory, but users may
+    already have faster-whisper models in the default user cache from web/dev
+    runs. Scanning both prevents already downloaded models from looking missing.
+    """
+    candidates: list[Path] = [_get_hf_hub_cache()]
+
+    for env_name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        value = os.environ.get(env_name)
+        if value:
+            candidates.append(Path(value).expanduser())
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        candidates.append(Path(hf_home).expanduser() / "hub")
+
+    candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "huggingface" / "hub")
+
+    return _dedupe_paths(candidates)
 
 
 def _format_estimated_size(model_size: str) -> str | None:
@@ -78,11 +126,11 @@ def _format_estimated_size(model_size: str) -> str | None:
     return f"约 {size_mb} MB"
 
 
-def _repo_cache_dir(repo_id: str) -> Path:
+def _repo_cache_dir(repo_id: str, hub_cache: Path | None = None) -> Path:
     repo_dir_name = repo_id.replace("/", "--")
     if not repo_dir_name.startswith("models--"):
         repo_dir_name = f"models--{repo_dir_name}"
-    return _get_hf_hub_cache() / repo_dir_name
+    return (hub_cache or _get_hf_hub_cache()) / repo_dir_name
 
 
 def _dir_size(path: Path) -> int:
@@ -129,6 +177,25 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return False
 
 
+def _merge_cache_entry(
+    found: dict[str, dict[str, Any]],
+    model_size: str,
+    entry: dict[str, Any],
+) -> None:
+    current = found.get(model_size)
+    if current is None:
+        found[model_size] = entry
+        return
+    if entry.get("downloaded") and not current.get("downloaded"):
+        found[model_size] = entry
+        return
+    if entry.get("downloaded") == current.get("downloaded"):
+        entry_size = int(entry.get("cache_size_bytes") or entry.get("downloaded_size_bytes") or 0)
+        current_size = int(current.get("cache_size_bytes") or current.get("downloaded_size_bytes") or 0)
+        if entry_size > current_size:
+            found[model_size] = entry
+
+
 def scan_whisper_cache() -> dict[str, dict[str, Any]]:
     """Scan HuggingFace cache once and return downloaded Whisper models."""
     repo_to_size = {repo_id: size for size, repo_id in _MODEL_REPO_MAP.items()}
@@ -137,58 +204,76 @@ def scan_whisper_cache() -> dict[str, dict[str, Any]]:
     try:
         from huggingface_hub import scan_cache_dir
 
-        cache_info = scan_cache_dir()
-        for repo in cache_info.repos:
-            model_size = repo_to_size.get(repo.repo_id)
-            if not model_size or not repo.revisions:
+        for hub_cache in _get_hf_hub_caches():
+            if not hub_cache.exists():
+                continue
+            try:
+                cache_info = scan_cache_dir(cache_dir=hub_cache)
+            except Exception as e:
+                logger.warning(f"扫描 HF 缓存失败 {hub_cache}: {e}")
                 continue
 
-            has_model_weights = any(
-                _is_model_weight_name(str(getattr(file, "file_name", "")))
-                for rev in repo.revisions
-                for file in rev.files
-            )
+            for repo in cache_info.repos:
+                model_size = repo_to_size.get(repo.repo_id)
+                if not model_size or not repo.revisions:
+                    continue
 
-            size_on_disk = getattr(repo, "size_on_disk", None)
-            if size_on_disk is None:
-                size_on_disk = sum(
-                    int(getattr(rev, "size_on_disk", 0) or 0)
+                has_model_weights = any(
+                    _is_model_weight_name(str(getattr(file, "file_name", "")))
                     for rev in repo.revisions
+                    for file in rev.files
                 )
 
-            repo_path = getattr(repo, "repo_path", None)
-            if not repo_path:
-                repo_path = _repo_cache_dir(repo.repo_id)
-            found[model_size] = _cache_entry(
-                downloaded=has_model_weights,
-                downloaded_size_bytes=size_on_disk or None,
-                repo_path=Path(repo_path),
-            )
+                size_on_disk = getattr(repo, "size_on_disk", None)
+                if size_on_disk is None:
+                    size_on_disk = sum(
+                        int(getattr(rev, "size_on_disk", 0) or 0)
+                        for rev in repo.revisions
+                    )
+
+                repo_path = getattr(repo, "repo_path", None)
+                if not repo_path:
+                    repo_path = _repo_cache_dir(repo.repo_id, hub_cache)
+                _merge_cache_entry(
+                    found,
+                    model_size,
+                    _cache_entry(
+                        downloaded=has_model_weights,
+                        downloaded_size_bytes=size_on_disk or None,
+                        repo_path=Path(repo_path),
+                    ),
+                )
     except Exception as e:
         logger.warning(f"扫描 HF 缓存失败: {e}")
 
     # Fallback/manual pass covers older huggingface_hub versions and custom HF_HOME layouts.
     for model_size, repo_id in _MODEL_REPO_MAP.items():
-        if model_size in found:
+        repo_dirs = [
+            _repo_cache_dir(repo_id, hub_cache)
+            for hub_cache in _get_hf_hub_caches()
+        ]
+        existing_repo_dirs = [repo_dir for repo_dir in repo_dirs if repo_dir.exists()]
+        if not existing_repo_dirs:
             continue
 
-        repo_dir = _repo_cache_dir(repo_id)
-        if not repo_dir.exists():
-            continue
+        for repo_dir in existing_repo_dirs:
+            has_model_file = any(
+                path.is_file() and _is_model_weight_name(path.name)
+                for path in repo_dir.rglob("*")
+            )
+            cache_size = _dir_size(repo_dir)
+            if not has_model_file and cache_size <= 0:
+                continue
 
-        has_model_file = any(
-            path.is_file() and _is_model_weight_name(path.name)
-            for path in repo_dir.rglob("*")
-        )
-        cache_size = _dir_size(repo_dir)
-        if not has_model_file and cache_size <= 0:
-            continue
-
-        found[model_size] = _cache_entry(
-            downloaded=has_model_file,
-            downloaded_size_bytes=cache_size if has_model_file else None,
-            repo_path=repo_dir,
-        )
+            _merge_cache_entry(
+                found,
+                model_size,
+                _cache_entry(
+                    downloaded=has_model_file,
+                    downloaded_size_bytes=cache_size if has_model_file else None,
+                    repo_path=repo_dir,
+                ),
+            )
 
     return found
 
@@ -199,7 +284,7 @@ def check_model_downloaded(model_size: str) -> bool:
     使用 huggingface_hub.scan_cache_dir 扫描缓存，
     匹配 repo_id 对应的模型。
     """
-    return model_size in scan_whisper_cache()
+    return bool(scan_whisper_cache().get(model_size, {}).get("downloaded"))
 
 
 def get_models_status() -> list[dict[str, Any]]:
@@ -301,7 +386,7 @@ def delete_model_cache(model_size: str) -> dict[str, Any]:
     cache_info = scan_whisper_cache().get(model_size, {})
     cache_path_value = cache_info.get("cache_path")
     cache_path = Path(cache_path_value) if cache_path_value else _repo_cache_dir(_MODEL_REPO_MAP[model_size])
-    hub_cache = _get_hf_hub_cache()
+    hub_caches = _get_hf_hub_caches()
 
     if not cache_path.exists():
         return {
@@ -312,7 +397,11 @@ def delete_model_cache(model_size: str) -> dict[str, Any]:
             "message": f"模型 {model_size} 未找到本地缓存",
         }
 
-    if cache_path.is_symlink() or not cache_path.is_dir() or not _is_relative_to(cache_path, hub_cache):
+    if (
+        cache_path.is_symlink()
+        or not cache_path.is_dir()
+        or not any(_is_relative_to(cache_path, hub_cache) for hub_cache in hub_caches)
+    ):
         return {
             "status": "error",
             "model_size": model_size,
@@ -322,12 +411,15 @@ def delete_model_cache(model_size: str) -> dict[str, Any]:
             "message": f"缓存路径不安全，已拒绝删除: {cache_path}",
         }
 
-    expected_dir = _repo_cache_dir(_MODEL_REPO_MAP[model_size]).resolve()
+    expected_dirs = {
+        _repo_cache_dir(_MODEL_REPO_MAP[model_size], hub_cache).resolve()
+        for hub_cache in hub_caches
+    }
     try:
         resolved_cache_path = cache_path.resolve()
     except OSError:
         resolved_cache_path = cache_path
-    if resolved_cache_path != expected_dir:
+    if resolved_cache_path not in expected_dirs:
         return {
             "status": "error",
             "model_size": model_size,

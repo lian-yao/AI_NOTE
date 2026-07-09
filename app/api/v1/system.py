@@ -25,6 +25,11 @@ from app.core.model_usage import (
     save_model_usage_config,
     validate_model_pair,
 )
+from app.transcriber.cuda_runtime import (
+    detect_cublas_dll_package,
+    gpu_python_packages_dir,
+    iter_python_site_package_dirs,
+)
 import json
 from pathlib import Path as _Path
 
@@ -956,18 +961,17 @@ def _detect_installed_cublas_package() -> str | None:
                 pass
     except Exception:
         pass
-    return None
 
-
-def _cublas_dll_version_from_path(path: Path) -> str | None:
-    """Return the nvidia-cublas package matching DLLs found in a directory."""
-    dll_sets = (
-        ("nvidia-cublas-cu12", ("cublas64_12.dll", "cublasLt64_12.dll")),
-        ("nvidia-cublas-cu11", ("cublas64_11.dll", "cublasLt64_11.dll")),
-    )
-    for package, dlls in dll_sets:
-        if all((path / dll).exists() for dll in dlls):
-            return package
+    # PyInstaller sidecar 看不到用户 Python 的 importlib.metadata，但可以
+    # 通过 site-packages 里的 dist-info 判断用户确实安装过该包。
+    normalized_names = {
+        "nvidia-cublas-cu12": "nvidia_cublas_cu12",
+        "nvidia-cublas-cu11": "nvidia_cublas_cu11",
+    }
+    for site_dir in iter_python_site_package_dirs():
+        for pkg_name, normalized in normalized_names.items():
+            if any(site_dir.glob(f"{normalized}-*.dist-info")):
+                return pkg_name
     return None
 
 
@@ -978,53 +982,7 @@ def _detect_cublas_dll_package() -> str | None:
     nvidia-cublas-cuXX, while the actual DLLs may be bundled or already copied
     next to ctranslate2. Treat those DLLs as installed to avoid repeated installs.
     """
-    candidate_dirs: list[Path] = []
-
-    try:
-        import ctranslate2 as _ct2
-        candidate_dirs.append(Path(_ct2.__file__).parent)
-    except Exception:
-        pass
-
-    try:
-        import nvidia.cublas as _cublas
-        candidate_dirs.append(Path(_cublas.__path__[0]) / "bin")
-    except Exception:
-        pass
-
-    for base in sys.path:
-        base_path = Path(base)
-        candidate_dirs.append(base_path / "nvidia" / "cublas" / "bin")
-
-    if sys.platform == "win32":
-        for base in os.environ.get("PATH", "").split(os.pathsep):
-            if base:
-                candidate_dirs.append(Path(base))
-
-    if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            root = Path(meipass)
-            candidate_dirs.extend([
-                root,
-                root / "nvidia" / "cublas" / "bin",
-                root / "_internal" / "nvidia" / "cublas" / "bin",
-                root / "ctranslate2",
-            ])
-
-    seen: set[str] = set()
-    for path in candidate_dirs:
-        try:
-            resolved = str(path.resolve())
-        except OSError:
-            resolved = str(path)
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        package = _cublas_dll_version_from_path(path)
-        if package:
-            return package
-    return None
+    return detect_cublas_dll_package()
 
 
 def _detect_cublas_installed() -> bool:
@@ -1039,10 +997,12 @@ def _detect_cublas_installed() -> bool:
     if installed_pkg and recommended and recommended != installed_pkg:
         return False
 
-    # 检查 DLL 是否可被 ctranslate2 加载
+    # 检查 DLL 是否可被 ctranslate2 加载；如果 DLL 已在用户 Python / AppData
+    # 可发现，也视为已安装，避免安装版重复提示安装。
     try:
         from app.transcriber.whisper import _HAS_CUDA_DLLS
-        return _HAS_CUDA_DLLS
+        if _HAS_CUDA_DLLS:
+            return True
     except Exception:
         pass
 
@@ -1161,24 +1121,26 @@ def install_gpu_deps():
             _gpu_install_tasks[task_id]["message"] = f"正在安装 {package}..."
 
             import sys
-            from app.core.paths import project_root as _project_root
+            target_dir = gpu_python_packages_dir()
+            target_dir.mkdir(parents=True, exist_ok=True)
 
-            _project_dir = str(_project_root())
-
-            # 根据 CUDA 版本选择安装方式
-            if package == "nvidia-cublas-cu12":
-                install_cmd = [_uv_path, "sync", "--group", "gpu"]
-                _gpu_install_tasks[task_id]["message"] = "uv sync --group gpu"
-            else:
-                install_cmd = [_uv_path, "pip", "install", package]
-                _gpu_install_tasks[task_id]["message"] = f"uv pip install {package}"
+            install_cmd = [
+                _uv_path,
+                "pip",
+                "install",
+                "--upgrade",
+                "--target",
+                str(target_dir),
+                package,
+            ]
+            _gpu_install_tasks[task_id]["message"] = f"uv pip install --target {target_dir} {package}"
 
             process = subprocess.Popen(
                 install_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                cwd=_project_dir,
+                cwd=str(target_dir.parent),
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
 
@@ -1208,6 +1170,9 @@ def install_gpu_deps():
                 _gpu_install_tasks[task_id]["progress"] = 95
                 # 安装成功后重新执行 DLL 设置
                 try:
+                    target = str(target_dir)
+                    if target not in sys.path:
+                        sys.path.insert(0, target)
                     from app.transcriber.whisper import _setup_cuda_dlls
                     _setup_cuda_dlls()
                 except Exception:
