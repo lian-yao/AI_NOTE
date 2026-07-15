@@ -1,19 +1,54 @@
-version: "3.9"
-
-services:
-  app:
-    build: .
+﻿services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+      # 可选：持久化 Whisper 模型缓存，避免每次重建重复下载
+      # - whisper_cache:/root/.cache/huggingface
     environment:
-      - TONGYI_API_KEY=${TONGYI_API_KEY}
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      # LLM API Key（必填，至少一个）
+      - VN_TONGYI_API_KEY=${VN_TONGYI_API_KEY}
+      - VN_DEEPSEEK_API_KEY=${VN_DEEPSEEK_API_KEY}
+      - VN_LLM_PROVIDER=${VN_LLM_PROVIDER:-tongyi}
+
+      # Embedding（不设置则复用 VN_TONGYI_API_KEY）
+      - VN_EMBEDDING_API_KEY=${VN_EMBEDDING_API_KEY}
+
+      # Whisper（默认 CPU + tiny 模型）
+      - VN_WHISPER_MODEL_SIZE=${VN_WHISPER_MODEL_SIZE:-tiny}
+      - VN_WHISPER_DEVICE=${VN_WHISPER_DEVICE:-cpu}
+
+      # B站 Cookie 来源
+      - VN_BILIBILI_COOKIE_SOURCE=${VN_BILIBILI_COOKIE_SOURCE:-string}
+
+      # HuggingFace 镜像（国内必设）
+      - HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+    restart: unless-stopped
+    # GPU 加速（如有 NVIDIA GPU，取消注释）
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    environment:
+      - BACKEND_HOST=backend
+      - BACKEND_PORT=8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+# volumes:
+#   whisper_cache:

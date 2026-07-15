@@ -1,0 +1,42 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.venv/
+venv/
+
+# Environment
+.env
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data（挂载卷，不打包进镜像）
+data/
+logs/
+
+# Backend dev / test
+tests/
+docs/
+文档/
+mock_backend/
+scripts/
+-x
+
+# Frontend（前后端分离构建，互不干扰）
+frontend/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes

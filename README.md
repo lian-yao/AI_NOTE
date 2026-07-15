@@ -198,6 +198,112 @@ curl -X DELETE http://localhost:8000/api/v1/system/note-format/templates/{name}
 
 ---
 
+
+## Docker 部署
+
+### 服务架构
+
+```
+┌─────────────┐      ┌──────────────┐
+│  nginx:1.25 │ ───→ │  FastAPI     │
+│  (frontend) │      │  (backend)   │
+│  :5173      │      │  :8000       │
+└─────────────┘      └──────┬───────┘
+                            │
+                     ┌──────┴───────┐
+                     │  SQLite      │
+                     │  ChromaDB    │
+                     │  文件系统     │
+                     │  (./data)    │
+                     └──────────────┘
+```
+
+- **backend**：Python 3.13 + uv，运行 FastAPI 服务
+- **frontend**：Node 20 构建，nginx 1.25 运行，自动代理 API / WebSocket / SSE 到后端
+
+### 前置条件
+
+- Docker Engine ≥ 24.0
+- Docker Compose v2（或 `docker compose` plugin）
+- （GPU 加速）NVIDIA Container Toolkit
+
+### 配置
+
+创建 `.env` 文件（参考 `.env.example`）：
+
+```env
+VN_TONGYI_API_KEY=sk-xxx
+VN_DEEPSEEK_API_KEY=sk-xxx
+VN_LLM_PROVIDER=tongyi
+VN_WHISPER_MODEL_SIZE=tiny
+VN_WHISPER_DEVICE=cpu
+HF_ENDPOINT=https://hf-mirror.com
+```
+
+### 构建与运行
+
+```bash
+# 构建并启动所有服务
+docker compose up -d
+
+# 查看实时日志
+docker compose logs -f
+
+# 仅启动后端（前端本地开发时）
+docker compose up -d backend
+
+# 停止所有服务
+docker compose down
+
+# 重新构建（代码变更后）
+docker compose build --no-cache
+```
+
+启动后：
+- 前端：`http://localhost:5173`
+- 后端 API：`http://localhost:8000`
+- API 文档：`http://localhost:8000/docs`
+
+### 数据持久化
+
+`./data` 目录通过卷挂载到容器 `/app/data`，包含：
+
+| 路径 | 说明 |
+|------|------|
+| `data/app.db` | SQLite 数据库 |
+| `data/chromadb/` | ChromaDB 向量数据 |
+| `data/notes/` | 笔记 Markdown 文件 |
+| `data/videos/` | 下载的视频、音频、转写结果 |
+| `data/cookies.txt` | B 站 Cookie |
+
+### 持久化 Whisper 模型（可选）
+
+Whisper 模型首次使用时下载（大小：tiny ~75MB，large-v3 ~3GB），默认存储在容器内，容器重建后需重新下载。如需持久化：
+
+编辑 `docker-compose.yml`，取消注释以下行：
+
+```yaml
+volumes:
+  - ./data:/app/data
+  - whisper_cache:/root/.cache/huggingface   # ← 取消注释
+
+volumes:
+  whisper_cache:                              # ← 取消注释
+```
+
+### GPU 加速
+
+取消 `docker-compose.yml` 中 `deploy.resources` 的注释，并确保已安装：
+
+```bash
+# Ubuntu / Debian
+sudo apt install nvidia-container-toolkit
+sudo systemctl restart docker
+
+# Windows 需要 WSL2 + CUDA 驱动
+```
+
+---
 ## 开发者指南
 
 ### 项目结构
@@ -325,7 +431,7 @@ npm run preview
 | `VN_DEEPSEEK_MODEL` | 否 | `deepseek-chat` | DeepSeek 模型名 |
 | `VN_EMBEDDING_API_KEY` | 否 | 复用 TONGYI | 专用 embedding API Key |
 | `VN_EMBEDDING_MODEL` | 否 | `text-embedding-v3` | embedding 模型名 |
-| `VN_WHISPER_MODEL_SIZE` | 否 | `medium` | Whisper 模型大小 |
+| `VN_WHISPER_MODEL_SIZE` | 否 | `tiny` | Whisper 模型大小 |
 | `VN_WHISPER_DEVICE` | 否 | `auto` | Whisper 运行设备（cpu/cuda/auto） |
 | `VN_BILIBILI_COOKIE_SOURCE` | 否 | `string` | Cookie 来源（string/file/browser/none） |
 | `VN_BILIBILI_COOKIE_FILE` | 否 | `data/cookies.txt` | Cookie 文件路径 |
@@ -346,3 +452,5 @@ Whisper 模型越大越慢越准。在 .env 中调整 VN_WHISPER_MODEL_SIZE（ti
 
 **如何更换 LLM 模型？** 
 提交前在「具体配置 → 大语言模型」中选择已启用的模型。如需添加新模型，先在设置页配置 Provider 并启用对应的模型。
+
+
